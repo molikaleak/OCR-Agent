@@ -179,6 +179,38 @@ def get_paddleocr_reader():
     return paddleocr_reader
 
 
+unlimited_model = None
+unlimited_tokenizer = None
+
+def get_unlimited_ocr_model():
+    global unlimited_model, unlimited_tokenizer
+    if unlimited_model is None:
+        try:
+            import torch
+            from transformers import AutoModel, AutoTokenizer
+            print("📥 Loading Local Unlimited-OCR model (3B MoE)...")
+            model_name = 'baidu/Unlimited-OCR'
+            unlimited_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
+            device_map = "auto"
+            torch_dtype = torch.float16 if torch.backends.mps.is_available() else torch.float32
+            unlimited_model = AutoModel.from_pretrained(
+                model_name,
+                trust_remote_code=True,
+                use_safetensors=True,
+                torch_dtype=torch_dtype,
+                device_map=device_map
+            )
+            unlimited_model = unlimited_model.eval()
+            print("✅ Local Unlimited-OCR model Loaded!")
+        except Exception as e:
+            print(f"❌ Failed to load Unlimited-OCR: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Local Unlimited-OCR model failed to load. Please verify dependencies or choose 'easyocr'. Error: {e}"
+            )
+    return unlimited_model, unlimited_tokenizer
+
+
 # ──────────────────────────────────────────────
 # Config Profiles Loader (Scalable & Modular)
 # ──────────────────────────────────────────────
@@ -485,9 +517,10 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
 # ──────────────────────────────────────────────
 # Local OCR Text Extraction Layer
 # ──────────────────────────────────────────────
-def extract_text_local_ocr(file_base64: str, mime_type: str) -> str:
-    """Runs local OCR engine (EasyOCR or PaddleOCR) on base64 input and returns extracted raw text."""
+def extract_text_local_ocr(file_base64: str, mime_type: str, engine: Optional[str] = None) -> str:
+    """Runs local OCR engine (EasyOCR, PaddleOCR, or Unlimited-OCR) on base64 input and returns extracted raw text."""
     file_bytes = base64.b64decode(file_base64)
+    active_engine = engine.strip().lower() if engine else OCR_ENGINE
     
     # If PDF, render first page to image
     if mime_type == "application/pdf":
@@ -500,28 +533,29 @@ def extract_text_local_ocr(file_base64: str, mime_type: str) -> str:
                 page = doc[i]
                 pix = page.get_pixmap(dpi=150)
                 img_bytes = pix.tobytes("png")
-                ocr_texts.append(run_ocr_on_image_bytes(img_bytes))
+                ocr_texts.append(run_ocr_on_image_bytes(img_bytes, engine=active_engine))
             return "\n\n".join(ocr_texts).strip()
         except Exception as e:
             print(f"PDF rendering for local OCR failed: {e}")
             return ""
     else:
-        return run_ocr_on_image_bytes(file_bytes)
+        return run_ocr_on_image_bytes(file_bytes, engine=active_engine)
 
 
-def run_ocr_on_image_bytes(img_bytes: bytes) -> str:
+def run_ocr_on_image_bytes(img_bytes: bytes, engine: Optional[str] = None) -> str:
+    active_engine = engine.strip().lower() if engine else OCR_ENGINE
     try:
         from PIL import Image
         img = Image.open(io.BytesIO(img_bytes))
         
-        if OCR_ENGINE == "easyocr":
+        if active_engine == "easyocr":
             import numpy as np
             reader = get_easyocr_reader()
             img_np = np.array(img.convert('RGB'))
             results = reader.readtext(img_np)
             return " ".join([res[1] for res in results])
             
-        elif OCR_ENGINE == "paddleocr":
+        elif active_engine == "paddleocr":
             import numpy as np
             ocr = get_paddleocr_reader()
             img_np = np.array(img.convert('RGB'))
@@ -533,6 +567,49 @@ def run_ocr_on_image_bytes(img_bytes: bytes) -> str:
                         for res in line:
                             text_lines.append(res[1][0])
             return " ".join(text_lines)
+
+        elif active_engine == "unlimited-ocr":
+            import tempfile
+            import shutil
+            import os
+            
+            model, tokenizer = get_unlimited_ocr_model()
+            
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as temp_img:
+                temp_img.write(img_bytes)
+                temp_img_path = temp_img.name
+                
+            temp_out_dir = tempfile.mkdtemp()
+            
+            try:
+                model.infer(
+                    tokenizer,
+                    prompt='<image>document parsing.',
+                    image_file=temp_img_path,
+                    output_path=temp_out_dir,
+                    base_size=1024,
+                    image_size=640,
+                    crop_mode=True
+                )
+                
+                out_files = os.listdir(temp_out_dir)
+                extracted_text = ""
+                if out_files:
+                    txt_files = [f for f in out_files if f.endswith('.txt') or f.endswith('.md')]
+                    if txt_files:
+                        result_path = os.path.join(temp_out_dir, txt_files[0])
+                        with open(result_path, "r", encoding="utf-8") as rf:
+                            extracted_text = rf.read()
+                    else:
+                        result_path = os.path.join(temp_out_dir, out_files[0])
+                        with open(result_path, "r", encoding="utf-8") as rf:
+                            extracted_text = rf.read()
+                return extracted_text.strip()
+            finally:
+                if os.path.exists(temp_img_path):
+                    os.remove(temp_img_path)
+                if os.path.exists(temp_out_dir):
+                    shutil.rmtree(temp_out_dir)
     except Exception as e:
         print(f"Local OCR text extraction failed: {e}")
         raise HTTPException(status_code=500, detail=f"Local OCR text extraction failed: {e}")
@@ -646,9 +723,9 @@ async def execute_ocr_call(
         raw, usage = await call_gemini(system_instruction, prompt)
         return raw, usage, extracted_text, "DOCX Native + Gemini Text"
         
-    # Route: Local OCR Engine selected (EasyOCR / PaddleOCR)
-    elif engine in ["easyocr", "paddleocr"]:
-        extracted_text = extract_text_local_ocr(req.file, mime)
+    # Route: Local OCR Engine selected (EasyOCR / PaddleOCR / Unlimited-OCR)
+    elif engine in ["easyocr", "paddleocr", "unlimited-ocr"]:
+        extracted_text = extract_text_local_ocr(req.file, mime, engine=engine)
         prompt = base_prompt + safety_rule + f"\n\nExtracted document text for reference:\n{extracted_text}"
         # Send text prompt to Gemini (completely free from multimodal/image token overhead)
         raw, usage = await call_gemini(system_instruction, prompt)

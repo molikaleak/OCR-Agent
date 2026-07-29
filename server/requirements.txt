@@ -10,3 +10,7 @@ torch
 pymupdf
 easyocr
 paddleocr
+einops
+addict
+easydict
+accelerate
