@@ -11,6 +11,7 @@ Run:
 """
 
 import os
+from datetime import datetime
 import re
 import json
 import httpx
@@ -631,7 +632,7 @@ async def execute_ocr_call(
     system_instruction: str,
     base_prompt: str,
     ocr_engine: Optional[str] = None
-) -> tuple[str, dict]:
+) -> tuple[str, dict, Optional[str], str]:
     mime = resolve_mime(req)
     engine = ocr_engine.strip().lower() if ocr_engine else OCR_ENGINE
     
@@ -642,19 +643,22 @@ async def execute_ocr_call(
     if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
         extracted_text = extract_docx_text(req.file)
         prompt = base_prompt + safety_rule + f"\n\nExtracted document text for reference:\n{extracted_text}"
-        return await call_gemini(system_instruction, prompt)
+        raw, usage = await call_gemini(system_instruction, prompt)
+        return raw, usage, extracted_text, "DOCX Native + Gemini Text"
         
     # Route: Local OCR Engine selected (EasyOCR / PaddleOCR)
     elif engine in ["easyocr", "paddleocr"]:
         extracted_text = extract_text_local_ocr(req.file, mime)
         prompt = base_prompt + safety_rule + f"\n\nExtracted document text for reference:\n{extracted_text}"
         # Send text prompt to Gemini (completely free from multimodal/image token overhead)
-        return await call_gemini(system_instruction, prompt)
+        raw, usage = await call_gemini(system_instruction, prompt)
+        return raw, usage, extracted_text, f"{engine.upper()} + Gemini Text"
         
     # Route: Default Gemini Vision Engine
     else:
         prompt = base_prompt + safety_rule
-        return await call_gemini(system_instruction, prompt, req.file, mime)
+        raw, usage = await call_gemini(system_instruction, prompt, req.file, mime)
+        return raw, usage, "N/A (Processed by Gemini Vision directly)", "Gemini Vision"
 
 
 def extract_json(raw: str) -> Optional[dict]:
@@ -690,6 +694,30 @@ def make_usage_info(usage_metadata: dict) -> TokenUsage:
     )
 
 
+QUALITY_LOG_FILE = "/Users/molika/Desktop/n8n ocr/ocr_data_quality_log.jsonl"
+
+def log_data_quality(
+    file_name: str,
+    category: str,
+    flow_type: str,
+    raw_ocr_text: Optional[str],
+    parsed_data: Optional[dict]
+):
+    log_entry = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "file_name": file_name,
+        "category": category,
+        "flow_type": flow_type,
+        "raw_ocr_text": raw_ocr_text,
+        "parsed_data": parsed_data
+    }
+    try:
+        with open(QUALITY_LOG_FILE, "a", encoding="utf-8") as f:
+            f.write(json.dumps(log_entry, ensure_ascii=False) + "\n")
+    except Exception as e:
+        print(f"⚠️ Error writing to quality log file: {e}")
+
+
 # ──────────────────────────────────────────────
 # Dynamic Handler Generator & Route Builder
 # ──────────────────────────────────────────────
@@ -703,9 +731,12 @@ def create_dynamic_handler(profile: dict):
         conf, cls_model = await verify_document_local(req, expected_category=profile["category"])
 
         profile_ocr_engine = profile.get("ocr_engine", OCR_ENGINE)
-        raw, usage = await execute_ocr_call(req, profile["system_instruction"], profile["prompt"], ocr_engine=profile_ocr_engine)
+        raw, usage, raw_ocr, flow = await execute_ocr_call(req, profile["system_instruction"], profile["prompt"], ocr_engine=profile_ocr_engine)
         parsed = extract_json(raw)
         usage_info = make_usage_info(usage)
+
+        # Log details to compare data quality
+        log_data_quality(req.fileName or "unknown", profile["category"], flow, raw_ocr, parsed)
 
         if not parsed:
             return OcrResponse(
