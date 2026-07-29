@@ -426,7 +426,9 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
                 "monitor", "television", "paper", "document", "file", "bookcase", "library",
                 "ruler", "rule", "passport", "identity card", "card", "ticket"
             ]
-            is_document_like = any(doc_cls in top1_class for doc_cls in DOCUMENT_IMAGENET_CLASSES)
+            # Normalize class names to prevent underscore/space mismatches (e.g. web_site vs web site)
+            norm_top1 = top1_class.replace("_", "").replace(" ", "").lower()
+            is_document_like = any(doc_cls.replace("_", "").replace(" ", "").lower() in norm_top1 for doc_cls in DOCUMENT_IMAGENET_CLASSES)
             if not is_document_like:
                 raise HTTPException(
                     status_code=400,
