@@ -2,8 +2,8 @@
 Local FastAPI OCR Server — Dynamic Config-Driven Architecture.
 Loads document schemas and prompts dynamically from JSON config profiles in the 'config/' directory.
 Registers API endpoints dynamically at startup and compiles the classifier prompt dynamically.
-Supports Local Zero-Shot Vision Classifiers (CLIP) for zero-training pre-checks of images and PDFs,
-with a fallback to YOLOv11n classification pre-verification.
+Intelligently routes local verification checks between YOLOv11 and CLIP zero-shot classifiers,
+supporting custom-trained YOLO weights, zero-training CLIP checks, and native DOCX bypasses.
 Secured with API Key Authentication, CORS hardening, XML Entity protection, and Prompt Injection mitigation.
 
 Run:
@@ -38,7 +38,7 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").strip()
 MAX_FILE_SIZE_MB = float(os.getenv("MAX_FILE_SIZE_MB", "15"))
 
-# Local Zero-Shot Classifier Config
+# Local Zero-Shot Classifier Config (CLIP)
 ENABLE_LOCAL_CLASSIFIER = os.getenv("ENABLE_LOCAL_CLASSIFIER", "False").lower() == "true"
 VISION_CLASSIFIER_MODEL = os.getenv("VISION_CLASSIFIER_MODEL", "openai/clip-vit-base-patch32").strip()
 LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD = float(os.getenv("LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD", "0.30"))
@@ -48,7 +48,7 @@ ENABLE_YOLO_CHECK = os.getenv("ENABLE_YOLO_CHECK", "False").lower() == "true"
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolo11n-cls.pt")
 YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.70"))
 
-app = FastAPI(title="Secured Dynamic local OCR Server", version="2.4.0")
+app = FastAPI(title="Secured Dynamic local OCR Server", version="2.5.0")
 
 # CORS Configuration
 origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
@@ -120,10 +120,10 @@ if ENABLE_LOCAL_CLASSIFIER:
 
 
 # ──────────────────────────────────────────────
-# Load YOLO Model (Optional pre-verification check fallback)
+# Load YOLO Model (Pre-verification check fallback)
 # ──────────────────────────────────────────────
 yolo_model = None
-if ENABLE_YOLO_CHECK and not ENABLE_LOCAL_CLASSIFIER:
+if ENABLE_YOLO_CHECK:
     try:
         from ultralytics import YOLO
         yolo_model = YOLO(YOLO_MODEL_PATH)
@@ -207,86 +207,109 @@ def extract_pdf_text(base64_data: str) -> str:
 
 
 # ──────────────────────────────────────────────
-# Local Dual-Engine Zero-Shot Classifier
+# Intelligent Local Classifier Router
 # ──────────────────────────────────────────────
 async def verify_document_local(req: OcrRequest, expected_category: Optional[str] = None) -> tuple[Optional[float], Optional[str]]:
-    """Local Zero-Shot Classifier (CLIP) with YOLO fallback. Returns (confidence, model_name)."""
-    if not ENABLE_LOCAL_CLASSIFIER:
-        if ENABLE_YOLO_CHECK:
-            return await verify_document_yolo(req, expected_category)
-        return None, None
-
+    """Intelligently routes local verification checks between custom-trained YOLO and zero-shot CLIP classifiers."""
     mime = resolve_mime(req)
     
     # ──────────────────────────────────────────────
     # 1. DOCX Native Document Bypass
     # ──────────────────────────────────────────────
     if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        # DOCX is inherently a document format (cannot be a noise image/photo), so we bypass zero-shot checks
         return 1.0, "docx-native-bypass"
 
     # ──────────────────────────────────────────────
-    # 2. Vision-Based Zero-Shot Classifier (Images & PDFs)
+    # 2. Check if a Custom-Trained YOLO model is loaded
     # ──────────────────────────────────────────────
-    if vision_pipeline is not None:
-        # Highly descriptive visual prompts for CLIP Vision Zero-Shot
-        vision_labels = {
-            "khmer_id": "a small rectangular plastic identity card, national ID card, badge, or driver's license",
-            "passport": "a passport page with booklet borders, photo, and MRZ machine-readable lines at the bottom",
-            "cv": "a full-page resume, curriculum vitae, CV, or professional work history document with text sections",
-            "certificate": "a certificate of achievement, academic diploma, award, or official credential document with decorative borders",
-            "invoice": "a financial invoice, billing receipt, purchase invoice, or utility bill with tables and columns",
-        }
-        try:
-            from PIL import Image
-            file_bytes = base64.b64decode(req.file)
+    is_custom_yolo = False
+    if ENABLE_YOLO_CHECK and yolo_model is not None:
+        defined_categories = list(PROFILES.keys())
+        model_classes = [name.lower() for name in yolo_model.names.values()]
+        is_custom_yolo = any(cat in model_classes for cat in defined_categories)
 
-            if mime == "application/pdf":
-                import fitz
-                doc = fitz.open(stream=file_bytes, filetype="pdf")
-                page = doc[0]
-                pix = page.get_pixmap(dpi=150)
-                img_bytes = pix.tobytes("png")
-                img = Image.open(io.BytesIO(img_bytes))
-            else:
-                img = Image.open(io.BytesIO(file_bytes))
+    # ──────────────────────────────────────────────
+    # 3. Routing Logic:
+    #    - Custom-Trained YOLO gets highest priority (most tailored).
+    #    - CLIP gets secondary priority (high zero-shot accuracy, free, zero training).
+    #    - Dummy ImageNet YOLO check is used as a final fallback.
+    # ──────────────────────────────────────────────
+    if is_custom_yolo:
+        return await verify_document_yolo(req, expected_category)
+    elif ENABLE_LOCAL_CLASSIFIER and vision_pipeline is not None:
+        return await verify_document_clip(req, expected_category)
+    elif ENABLE_YOLO_CHECK:
+        return await verify_document_yolo(req, expected_category)
+    
+    return None, None
 
-            candidate_labels = list(vision_labels.values()) + ["a random photo, landscape, or non-document object"]
-            results = vision_pipeline(img, candidate_labels=candidate_labels)
 
-            top1_label = results[0]["label"]
-            top1_conf = results[0]["score"]
+# ──────────────────────────────────────────────
+# Vision-Based Zero-Shot CLIP Classifier
+# ──────────────────────────────────────────────
+async def verify_document_clip(req: OcrRequest, expected_category: Optional[str] = None) -> tuple[Optional[float], Optional[str]]:
+    """Zero-shot image classification using CLIP."""
+    if vision_pipeline is None:
+        return None, None
 
-            top1_category = "unknown"
-            for cat, label in vision_labels.items():
-                if label == top1_label:
-                    top1_category = cat
-                    break
+    mime = resolve_mime(req)
+    vision_labels = {
+        "khmer_id": "a small rectangular plastic identity card, national ID card, badge, or driver's license",
+        "passport": "a passport page with booklet borders, photo, and MRZ machine-readable lines at the bottom",
+        "cv": "a full-page resume, curriculum vitae, CV, or professional work history document with text sections",
+        "certificate": "a certificate of achievement, academic diploma, award, or official credential document with decorative borders",
+        "invoice": "a financial invoice, billing receipt, purchase invoice, or utility bill with tables and columns",
+    }
 
-            print(f"🔍 [Local Vision Classifier] Winner: '{top1_category}' ({top1_conf:.2%})")
+    try:
+        from PIL import Image
+        file_bytes = base64.b64decode(req.file)
 
-            # Check threshold (Safe 30% for multi-class visual zero-shot CLIP classification)
-            conf_threshold = max(0.30, LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD)
+        if mime == "application/pdf":
+            import fitz
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            page = doc[0]
+            pix = page.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_bytes))
+        else:
+            img = Image.open(io.BytesIO(file_bytes))
 
-            if top1_category == "unknown" or top1_conf < conf_threshold:
+        candidate_labels = list(vision_labels.values()) + ["a random photo, landscape, or non-document object"]
+        results = vision_pipeline(img, candidate_labels=candidate_labels)
+
+        top1_label = results[0]["label"]
+        top1_conf = results[0]["score"]
+
+        top1_category = "unknown"
+        for cat, label in vision_labels.items():
+            if label == top1_label:
+                top1_category = cat
+                break
+
+        print(f"🔍 [Local CLIP Classifier] Winner: '{top1_category}' ({top1_conf:.2%})")
+
+        conf_threshold = max(0.30, LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD)
+
+        if top1_category == "unknown" or top1_conf < conf_threshold:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Local verification failed: Uploaded image is not recognized (Matched as '{top1_label}' with {top1_conf:.2%})"
+            )
+
+        if expected_category:
+            expected = expected_category.lower()
+            if top1_category != expected:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Local verification failed: Uploaded image is not recognized (Matched as '{top1_label}' with {top1_conf:.2%})"
+                    detail=f"Local verification failed: Mismatched document type. Expected '{expected}', but detected '{top1_category}'"
                 )
-
-            if expected_category:
-                expected = expected_category.lower()
-                if top1_category != expected:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Local verification failed: Mismatched document type. Expected '{expected}', but detected '{top1_category}'"
-                    )
-            return top1_conf, VISION_CLASSIFIER_MODEL
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"⚠️ Vision zero-shot classifier error: {e}.")
-            return None, None
+        return top1_conf, VISION_CLASSIFIER_MODEL
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"⚠️ CLIP zero-shot classifier error: {e}.")
+        return None, None
 
 
 # ──────────────────────────────────────────────
@@ -691,12 +714,12 @@ async def startup_banner():
     print(f"API Authentication   : {'ENABLED (Header: X-API-Key)' if API_AUTH_TOKEN else 'DISABLED (Warning: Public Access)'}")
     print(f"CORS Allowed Origins : {ALLOWED_ORIGINS}")
     print(f"Payload Size Limit   : {MAX_FILE_SIZE_MB} MB")
-    print(f"Local Classifier     : {'ENABLED (Zero-Shot CLIP)' if ENABLE_LOCAL_CLASSIFIER else 'DISABLED'}")
+    print(f"Local CLIP Classifier: {'ENABLED (Zero-Shot CLIP)' if ENABLE_LOCAL_CLASSIFIER else 'DISABLED'}")
     if ENABLE_LOCAL_CLASSIFIER:
         print(f"  Vision Model       : {VISION_CLASSIFIER_MODEL}")
         print(f"  Confidence Cutoff  : {LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:.2%}")
     print(f"YOLOv11 Verification : {'ENABLED' if ENABLE_YOLO_CHECK else 'DISABLED'}")
-    if ENABLE_YOLO_CHECK and not ENABLE_LOCAL_CLASSIFIER:
+    if ENABLE_YOLO_CHECK:
         print(f"  YOLO Model Path    : {YOLO_MODEL_PATH}")
         print(f"  YOLO Conf Cutoff   : {YOLO_CONFIDENCE_THRESHOLD:.2%}")
     print("-" * 60)
