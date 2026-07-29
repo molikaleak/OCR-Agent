@@ -211,11 +211,11 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
         # Inspect if this is a custom trained classifier or a pre-trained ImageNet model
         model_classes = [name.lower() for name in yolo_model.names.values()]
         is_custom_model = any(cat in model_classes for cat in defined_categories)
-        
-        # Enforce minimum threshold (Defaults to 70% or configured value)
-        conf_threshold = max(0.70, YOLO_CONFIDENCE_THRESHOLD)
 
         if is_custom_model:
+            # Enforce strict 70% threshold for custom models
+            conf_threshold = max(0.70, YOLO_CONFIDENCE_THRESHOLD)
+            
             # 1. Reject if predicted class is not one of our defined categories
             if top1_class not in defined_categories:
                 raise HTTPException(
@@ -282,11 +282,12 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
                     detail=f"YOLO verification failed: Uploaded file does not appear to be a document (Classified as '{top1_class}')"
                 )
             
-            # Enforce 70% threshold even for dummy model document verification!
-            if top1_conf < conf_threshold:
+            # For the dummy model, enforce a lower threshold (e.g. 15%) because ImageNet has 1000 classes
+            dummy_threshold = YOLO_CONFIDENCE_THRESHOLD if YOLO_CONFIDENCE_THRESHOLD <= 0.40 else 0.15
+            if top1_conf < dummy_threshold:
                 raise HTTPException(
                     status_code=400,
-                    detail=f"YOLO verification failed: Document confidence too low ({top1_conf:.2%} < {conf_threshold:.2%})"
+                    detail=f"YOLO verification failed: Document confidence too low ({top1_conf:.2%} < {dummy_threshold:.2%})"
                 )
             
             print(f"🔍 [YOLO Dummy Verification] Document page validated under class '{top1_class}' ({top1_conf:.2%})")
