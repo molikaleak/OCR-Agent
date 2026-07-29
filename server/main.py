@@ -2,7 +2,8 @@
 Local FastAPI OCR Server — Dynamic Config-Driven Architecture.
 Loads document schemas and prompts dynamically from JSON config profiles in the 'config/' directory.
 Registers API endpoints dynamically at startup and compiles the classifier prompt dynamically.
-Includes local YOLOv11n classification pre-verification checks to save Gemini API token costs.
+Supports Dual-Engine Local Zero-Shot Classifiers (CLIP & DistilBERT) for zero-training pre-checks,
+with a fallback to YOLOv11n classification pre-verification.
 Secured with API Key Authentication, CORS hardening, XML Entity protection, and Prompt Injection mitigation.
 
 Run:
@@ -37,12 +38,18 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").strip()
 MAX_FILE_SIZE_MB = float(os.getenv("MAX_FILE_SIZE_MB", "15"))
 
+# Local Dual-Engine Zero-Shot Classifier Config
+ENABLE_LOCAL_CLASSIFIER = os.getenv("ENABLE_LOCAL_CLASSIFIER", "False").lower() == "true"
+VISION_CLASSIFIER_MODEL = os.getenv("VISION_CLASSIFIER_MODEL", "openai/clip-vit-base-patch32").strip()
+TEXT_CLASSIFIER_MODEL = os.getenv("TEXT_CLASSIFIER_MODEL", "typeform/distilbert-base-uncased-mnli").strip()
+LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD = float(os.getenv("LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD", "0.60"))
+
 # Local YOLOv11 Verification Config
 ENABLE_YOLO_CHECK = os.getenv("ENABLE_YOLO_CHECK", "False").lower() == "true"
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolo11n-cls.pt")
 YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.70"))
 
-app = FastAPI(title="Secured Dynamic local OCR Server", version="2.2.0")
+app = FastAPI(title="Secured Dynamic local OCR Server", version="2.3.0")
 
 # CORS Configuration
 origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
@@ -94,10 +101,30 @@ class OcrResponse(BaseModel):
 
 
 # ──────────────────────────────────────────────
-# Load YOLO Model (Optional pre-verification check)
+# Load Transformers pipelines for Zero-Shot Engine
+# ──────────────────────────────────────────────
+vision_pipeline = None
+text_pipeline = None
+
+if ENABLE_LOCAL_CLASSIFIER:
+    try:
+        from transformers import pipeline
+        print("\n" + "=" * 60)
+        print(f"📥 Loading Local Vision Zero-Shot Classifier: {VISION_CLASSIFIER_MODEL}...")
+        vision_pipeline = pipeline("zero-shot-image-classification", model=VISION_CLASSIFIER_MODEL)
+        print(f"📥 Loading Local Text Zero-Shot Classifier: {TEXT_CLASSIFIER_MODEL}...")
+        text_pipeline = pipeline("zero-shot-classification", model=TEXT_CLASSIFIER_MODEL)
+        print("✅ Local Dual-Engine Zero-Shot Classifiers Loaded successfully!")
+        print("=" * 60 + "\n")
+    except Exception as e:
+        print(f"⚠️ Failed to load local zero-shot classifiers: {e}")
+
+
+# ──────────────────────────────────────────────
+# Load YOLO Model (Optional pre-verification check fallback)
 # ──────────────────────────────────────────────
 yolo_model = None
-if ENABLE_YOLO_CHECK:
+if ENABLE_YOLO_CHECK and not ENABLE_LOCAL_CLASSIFIER:
     try:
         from ultralytics import YOLO
         yolo_model = YOLO(YOLO_MODEL_PATH)
@@ -164,6 +191,142 @@ def verify_payload_size(req: OcrRequest):
 
 
 # ──────────────────────────────────────────────
+# Local Text PDF Extraction Helper
+# ──────────────────────────────────────────────
+def extract_pdf_text(base64_data: str) -> str:
+    try:
+        import fitz  # PyMuPDF
+        file_bytes = base64.b64decode(base64_data)
+        doc = fitz.open(stream=file_bytes, filetype="pdf")
+        texts = []
+        for page in doc[:3]:  # inspect first 3 pages
+            texts.append(page.get_text())
+        return "\n".join(texts).strip()
+    except Exception as e:
+        print(f"PDF local text extraction note: {e}")
+        return ""
+
+
+# ──────────────────────────────────────────────
+# Local Dual-Engine Zero-Shot Classifier
+# ──────────────────────────────────────────────
+async def verify_document_local(req: OcrRequest, expected_category: Optional[str] = None):
+    """Local Dual-Engine Zero-Shot Classifier (CLIP & DistilBERT) with YOLO fallback."""
+    if not ENABLE_LOCAL_CLASSIFIER:
+        if ENABLE_YOLO_CHECK:
+            await verify_document_yolo(req, expected_category)
+        return
+
+    mime = resolve_mime(req)
+    
+    # Text mapping descriptions to provide rich context to Zero-Shot pipelines
+    category_label_map = {
+        "khmer_id": "national identity card",
+        "passport": "international passport document page",
+        "cv": "resume curriculum vitae CV document page",
+        "certificate": "academic certificate diploma award",
+        "invoice": "financial invoice receipt utility bill sales receipt",
+    }
+
+    # ──────────────────────────────────────────────
+    # 1. Text-Based Zero-Shot Classifier (DOCX / PDF)
+    # ──────────────────────────────────────────────
+    extracted_text = ""
+    if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
+        extracted_text = extract_docx_text(req.file)
+    elif mime == "application/pdf":
+        extracted_text = extract_pdf_text(req.file)
+
+    if extracted_text and text_pipeline is not None:
+        candidate_labels = list(category_label_map.values()) + ["random unrelated generic text"]
+        truncated_text = extracted_text[:1200]  # truncate to prevent transformer limits
+        
+        try:
+            results = text_pipeline(truncated_text, candidate_labels=candidate_labels)
+            top1_label = results["labels"][0]
+            top1_conf = results["scores"][0]
+
+            top1_category = "unknown"
+            for cat, label in category_label_map.items():
+                if label == top1_label:
+                    top1_category = cat
+                    break
+
+            print(f"🔍 [Local Text Classifier] Classified as '{top1_category}' ({top1_conf:.2%})")
+
+            # Check if classified as unknown / unrelated or confidence is below threshold
+            if top1_category == "unknown" or top1_conf < LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Local verification failed: Document content not recognized (Classified as '{top1_label}' with {top1_conf:.2%})"
+                )
+
+            if expected_category:
+                expected = expected_category.lower()
+                if top1_category != expected:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Local verification failed: Mismatched document type. Expected '{expected}', but detected '{top1_category}'"
+                    )
+            return
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"⚠️ Text zero-shot classifier error: {e}. Falling back to Vision check.")
+
+    # ──────────────────────────────────────────────
+    # 2. Vision-Based Zero-Shot Classifier (Images & PDF fallback)
+    # ──────────────────────────────────────────────
+    if vision_pipeline is not None:
+        try:
+            from PIL import Image
+            file_bytes = base64.b64decode(req.file)
+
+            if mime == "application/pdf":
+                import fitz
+                doc = fitz.open(stream=file_bytes, filetype="pdf")
+                page = doc[0]
+                pix = page.get_pixmap(dpi=150)
+                img_bytes = pix.tobytes("png")
+                img = Image.open(io.BytesIO(img_bytes))
+            else:
+                img = Image.open(io.BytesIO(file_bytes))
+
+            candidate_labels = list(category_label_map.values()) + ["a useless random object or photo"]
+            results = vision_pipeline(img, candidate_labels=candidate_labels)
+
+            top1_label = results[0]["label"]
+            top1_conf = results[0]["score"]
+
+            top1_category = "unknown"
+            for cat, label in category_label_map.items():
+                if label == top1_label:
+                    top1_category = cat
+                    break
+
+            print(f"🔍 [Local Vision Classifier] Classified as '{top1_category}' ({top1_conf:.2%})")
+
+            if top1_category == "unknown" or top1_conf < LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Local verification failed: Uploaded image is not a recognized document (Classified as '{top1_label}' with {top1_conf:.2%})"
+                )
+
+            if expected_category:
+                expected = expected_category.lower()
+                if top1_category != expected:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Local verification failed: Mismatched document type. Expected '{expected}', but detected '{top1_category}'"
+                    )
+            return
+        except HTTPException:
+            raise
+        except Exception as e:
+            print(f"⚠️ Vision zero-shot classifier error: {e}.")
+
+
+# ──────────────────────────────────────────────
 # YOLO Pre-Verification Logic (Saves Gemini Tokens)
 # ──────────────────────────────────────────────
 async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str] = None):
@@ -173,23 +336,19 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
 
     mime = resolve_mime(req)
     if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        return  # Skip Word docs since they are text-only
+        return
 
     try:
         from PIL import Image
         file_bytes = base64.b64decode(req.file)
         
         if mime == "application/pdf":
-            try:
-                import fitz  # PyMuPDF
-                doc = fitz.open(stream=file_bytes, filetype="pdf")
-                page = doc[0]
-                pix = page.get_pixmap(dpi=150)
-                img_bytes = pix.tobytes("png")
-                img = Image.open(io.BytesIO(img_bytes))
-            except Exception as pe:
-                print(f"YOLO PDF conversion note: {pe}. Skipping YOLO check.")
-                return
+            import fitz
+            doc = fitz.open(stream=file_bytes, filetype="pdf")
+            page = doc[0]
+            pix = page.get_pixmap(dpi=150)
+            img_bytes = pix.tobytes("png")
+            img = Image.open(io.BytesIO(img_bytes))
         else:
             img = Image.open(io.BytesIO(file_bytes))
 
@@ -213,24 +372,19 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
         is_custom_model = any(cat in model_classes for cat in defined_categories)
 
         if is_custom_model:
-            # Enforce strict 70% threshold for custom models
             conf_threshold = max(0.70, YOLO_CONFIDENCE_THRESHOLD)
-            
-            # 1. Reject if predicted class is not one of our defined categories
             if top1_class not in defined_categories:
                 raise HTTPException(
                     status_code=400,
                     detail=f"YOLO verification failed: Predicted type '{top1_class}' is not a recognized document category."
                 )
 
-            # 2. Reject if confidence is below 70%
             if top1_conf < conf_threshold:
                 raise HTTPException(
                     status_code=400,
                     detail=f"YOLO verification failed: Confidence too low ({top1_conf:.2%} < {conf_threshold:.2%}) for category '{top1_class}'"
                 )
 
-            # 3. Enforce category routing match if expected_category is provided
             if expected_category:
                 expected = expected_category.lower()
                 if top1_class != expected:
@@ -242,7 +396,6 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
 
         # Pre-trained/dummy ImageNet classification model (yolo11n-cls.pt) fallback
         else:
-            # Let's mock classification names from filename for developer testing
             mock_class = None
             filename_lower = (req.fileName or "").lower()
             if any(k in filename_lower for k in ["id", "khmer_id"]):
@@ -256,7 +409,6 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
             elif any(k in filename_lower for k in ["invoice", "bill", "receipt"]):
                 mock_class = "invoice"
                 
-            # If we resolved a mock category from filename, enforce category check
             if mock_class:
                 print(f"🔍 [YOLO Dummy Testing] Mapped filename '{req.fileName}' to mock category '{mock_class}'")
                 if expected_category:
@@ -268,7 +420,6 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
                         )
                 return
 
-            # Document/Office/Paper/Card/Ruler-like classes on ImageNet
             DOCUMENT_IMAGENET_CLASSES = [
                 "web site", "website", "envelope", "notebook", "binder", "packet", "carton", 
                 "slate", "book jacket", "menu", "comic book", "street sign", "screen", 
@@ -282,7 +433,6 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
                     detail=f"YOLO verification failed: Uploaded file does not appear to be a document (Classified as '{top1_class}')"
                 )
             
-            # For the dummy model, enforce a lower threshold (e.g. 15%) because ImageNet has 1000 classes
             dummy_threshold = YOLO_CONFIDENCE_THRESHOLD if YOLO_CONFIDENCE_THRESHOLD <= 0.40 else 0.15
             if top1_conf < dummy_threshold:
                 raise HTTPException(
@@ -448,8 +598,8 @@ def create_dynamic_handler(profile: dict):
         # Enforce payload size limits
         verify_payload_size(req)
 
-        # Pre-verify category using YOLO before triggering Gemini OCR API
-        await verify_document_yolo(req, expected_category=profile["category"])
+        # Pre-verify category locally before triggering Gemini OCR API
+        await verify_document_local(req, expected_category=profile["category"])
 
         raw, usage = await execute_ocr_call(req, profile["system_instruction"], profile["prompt"])
         parsed = extract_json(raw)
@@ -516,7 +666,7 @@ async def auto_router(req: OcrRequest):
         return await handler_func(req)
 
     # Otherwise run general pre-verification (detects useless documents)
-    await verify_document_yolo(req)
+    await verify_document_local(req)
 
     # Classify dynamically using the compiled classifier prompt
     classify_sys, classify_prompt = get_classifier_prompt()
@@ -566,9 +716,15 @@ async def startup_banner():
     print(f"API Authentication   : {'ENABLED (Header: X-API-Key)' if API_AUTH_TOKEN else 'DISABLED (Warning: Public Access)'}")
     print(f"CORS Allowed Origins : {ALLOWED_ORIGINS}")
     print(f"Payload Size Limit   : {MAX_FILE_SIZE_MB} MB")
+    print(f"Local Classifier     : {'ENABLED (Dual Zero-Shot)' if ENABLE_LOCAL_CLASSIFIER else 'DISABLED'}")
+    if ENABLE_LOCAL_CLASSIFIER:
+        print(f"  Vision Model       : {VISION_CLASSIFIER_MODEL}")
+        print(f"  Text Model         : {TEXT_CLASSIFIER_MODEL}")
+        print(f"  Confidence Cutoff  : {LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:.2%}")
     print(f"YOLOv11 Verification : {'ENABLED' if ENABLE_YOLO_CHECK else 'DISABLED'}")
-    print(f"YOLO Model Path      : {YOLO_MODEL_PATH}")
-    print(f"YOLO Conf Threshold  : {YOLO_CONFIDENCE_THRESHOLD:.2%}")
+    if ENABLE_YOLO_CHECK and not ENABLE_LOCAL_CLASSIFIER:
+        print(f"  YOLO Model Path    : {YOLO_MODEL_PATH}")
+        print(f"  YOLO Conf Cutoff   : {YOLO_CONFIDENCE_THRESHOLD:.2%}")
     print("-" * 60)
     print("Registered Endpoints:")
     for cat, profile in PROFILES.items():
