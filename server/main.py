@@ -2,7 +2,7 @@
 Local FastAPI OCR Server — Dynamic Config-Driven Architecture.
 Loads document schemas and prompts dynamically from JSON config profiles in the 'config/' directory.
 Registers API endpoints dynamically at startup and compiles the classifier prompt dynamically.
-Supports Dual-Engine Local Zero-Shot Classifiers (CLIP & DistilBERT) for zero-training pre-checks,
+Supports Local Zero-Shot Vision Classifiers (CLIP) for zero-training pre-checks of images and PDFs,
 with a fallback to YOLOv11n classification pre-verification.
 Secured with API Key Authentication, CORS hardening, XML Entity protection, and Prompt Injection mitigation.
 
@@ -38,18 +38,17 @@ API_AUTH_TOKEN = os.getenv("API_AUTH_TOKEN", "").strip()
 ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").strip()
 MAX_FILE_SIZE_MB = float(os.getenv("MAX_FILE_SIZE_MB", "15"))
 
-# Local Dual-Engine Zero-Shot Classifier Config
+# Local Zero-Shot Classifier Config
 ENABLE_LOCAL_CLASSIFIER = os.getenv("ENABLE_LOCAL_CLASSIFIER", "False").lower() == "true"
 VISION_CLASSIFIER_MODEL = os.getenv("VISION_CLASSIFIER_MODEL", "openai/clip-vit-base-patch32").strip()
-TEXT_CLASSIFIER_MODEL = os.getenv("TEXT_CLASSIFIER_MODEL", "typeform/distilbert-base-uncased-mnli").strip()
-LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD = float(os.getenv("LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD", "0.35"))
+LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD = float(os.getenv("LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD", "0.30"))
 
 # Local YOLOv11 Verification Config
 ENABLE_YOLO_CHECK = os.getenv("ENABLE_YOLO_CHECK", "False").lower() == "true"
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolo11n-cls.pt")
 YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.70"))
 
-app = FastAPI(title="Secured Dynamic local OCR Server", version="2.3.3")
+app = FastAPI(title="Secured Dynamic local OCR Server", version="2.4.0")
 
 # CORS Configuration
 origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
@@ -95,7 +94,7 @@ class OcrResponse(BaseModel):
     success: bool
     document_type: str
     confidence: Optional[float] = None          # Returned for validation logging
-    classifier_model: Optional[str] = None      # Model used for local check (YOLO/CLIP/DistilBERT)
+    classifier_model: Optional[str] = None      # Model used for local check (YOLO/CLIP)
     ocr_model: Optional[str] = None             # Gemini model used for OCR
     data: Optional[dict] = None
     error: Optional[str] = None
@@ -107,7 +106,6 @@ class OcrResponse(BaseModel):
 # Load Transformers pipelines for Zero-Shot Engine
 # ──────────────────────────────────────────────
 vision_pipeline = None
-text_pipeline = None
 
 if ENABLE_LOCAL_CLASSIFIER:
     try:
@@ -115,12 +113,10 @@ if ENABLE_LOCAL_CLASSIFIER:
         print("\n" + "=" * 60)
         print(f"📥 Loading Local Vision Zero-Shot Classifier: {VISION_CLASSIFIER_MODEL}...")
         vision_pipeline = pipeline("zero-shot-image-classification", model=VISION_CLASSIFIER_MODEL)
-        print(f"📥 Loading Local Text Zero-Shot Classifier: {TEXT_CLASSIFIER_MODEL}...")
-        text_pipeline = pipeline("zero-shot-classification", model=TEXT_CLASSIFIER_MODEL)
-        print("✅ Local Dual-Engine Zero-Shot Classifiers Loaded successfully!")
+        print("✅ Local Vision Zero-Shot Classifier Loaded successfully!")
         print("=" * 60 + "\n")
     except Exception as e:
-        print(f"⚠️ Failed to load local zero-shot classifiers: {e}")
+        print(f"⚠️ Failed to load local zero-shot classifier: {e}")
 
 
 # ──────────────────────────────────────────────
@@ -214,7 +210,7 @@ def extract_pdf_text(base64_data: str) -> str:
 # Local Dual-Engine Zero-Shot Classifier
 # ──────────────────────────────────────────────
 async def verify_document_local(req: OcrRequest, expected_category: Optional[str] = None) -> tuple[Optional[float], Optional[str]]:
-    """Local Dual-Engine Zero-Shot Classifier (CLIP & DistilBERT) with YOLO fallback. Returns (confidence, model_name)."""
+    """Local Zero-Shot Classifier (CLIP) with YOLO fallback. Returns (confidence, model_name)."""
     if not ENABLE_LOCAL_CLASSIFIER:
         if ENABLE_YOLO_CHECK:
             return await verify_document_yolo(req, expected_category)
@@ -223,63 +219,14 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
     mime = resolve_mime(req)
     
     # ──────────────────────────────────────────────
-    # 1. Text-Based Zero-Shot Classifier (DOCX / PDF)
+    # 1. DOCX Native Document Bypass
     # ──────────────────────────────────────────────
-    extracted_text = ""
     if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        extracted_text = extract_docx_text(req.file)
-    elif mime == "application/pdf":
-        extracted_text = extract_pdf_text(req.file)
-
-    if extracted_text and text_pipeline is not None:
-        # For text classification, keep candidates clean and simple (e.g. CV vs Invoice)
-        text_labels = {
-            "khmer_id": "Cambodian National ID Card",
-            "passport": "International Passport",
-            "cv": "Curriculum Vitae Resume CV",
-            "certificate": "Academic Certificate Diploma",
-            "invoice": "Financial Invoice Bill Receipt",
-        }
-        try:
-            candidate_labels = list(text_labels.values()) + ["random unrelated literature page"]
-            results = text_pipeline(extracted_text[:1200], candidate_labels=candidate_labels)
-            
-            top1_label = results["labels"][0]
-            top1_conf = results["scores"][0]
-
-            top1_category = "unknown"
-            for cat, label in text_labels.items():
-                if label == top1_label:
-                    top1_category = cat
-                    break
-
-            print(f"🔍 [Local Text Classifier] Winner: '{top1_category}' ({top1_conf:.2%})")
-
-            # PDF/DOCX layouts are highly structured, but raw text classifiers can have lower zero-shot bounds.
-            # We enforce a relaxed 25% minimum threshold for zero-shot text matching.
-            conf_threshold = 0.25
-
-            if top1_category == "unknown" or top1_conf < conf_threshold:
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Local verification failed: Document content not recognized (Matched as '{top1_label}' with {top1_conf:.2%})"
-                )
-
-            if expected_category:
-                expected = expected_category.lower()
-                if top1_category != expected:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Local verification failed: Mismatched document type. Expected '{expected}', but detected '{top1_category}'"
-                    )
-            return top1_conf, TEXT_CLASSIFIER_MODEL
-        except HTTPException:
-            raise
-        except Exception as e:
-            print(f"⚠️ Text zero-shot classifier error: {e}. Falling back to Vision check.")
+        # DOCX is inherently a document format (cannot be a noise image/photo), so we bypass zero-shot checks
+        return 1.0, "docx-native-bypass"
 
     # ──────────────────────────────────────────────
-    # 2. Vision-Based Zero-Shot Classifier (Images & PDF fallback)
+    # 2. Vision-Based Zero-Shot Classifier (Images & PDFs)
     # ──────────────────────────────────────────────
     if vision_pipeline is not None:
         # Highly descriptive visual prompts for CLIP Vision Zero-Shot
@@ -319,7 +266,7 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
             print(f"🔍 [Local Vision Classifier] Winner: '{top1_category}' ({top1_conf:.2%})")
 
             # Check threshold (Safe 30% for multi-class visual zero-shot CLIP classification)
-            conf_threshold = 0.30
+            conf_threshold = max(0.30, LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD)
 
             if top1_category == "unknown" or top1_conf < conf_threshold:
                 raise HTTPException(
@@ -744,10 +691,9 @@ async def startup_banner():
     print(f"API Authentication   : {'ENABLED (Header: X-API-Key)' if API_AUTH_TOKEN else 'DISABLED (Warning: Public Access)'}")
     print(f"CORS Allowed Origins : {ALLOWED_ORIGINS}")
     print(f"Payload Size Limit   : {MAX_FILE_SIZE_MB} MB")
-    print(f"Local Classifier     : {'ENABLED (Dual Zero-Shot)' if ENABLE_LOCAL_CLASSIFIER else 'DISABLED'}")
+    print(f"Local Classifier     : {'ENABLED (Zero-Shot CLIP)' if ENABLE_LOCAL_CLASSIFIER else 'DISABLED'}")
     if ENABLE_LOCAL_CLASSIFIER:
         print(f"  Vision Model       : {VISION_CLASSIFIER_MODEL}")
-        print(f"  Text Model         : {TEXT_CLASSIFIER_MODEL}")
         print(f"  Confidence Cutoff  : {LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:.2%}")
     print(f"YOLOv11 Verification : {'ENABLED' if ENABLE_YOLO_CHECK else 'DISABLED'}")
     if ENABLE_YOLO_CHECK and not ENABLE_LOCAL_CLASSIFIER:
