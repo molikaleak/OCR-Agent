@@ -49,7 +49,7 @@ ENABLE_YOLO_CHECK = os.getenv("ENABLE_YOLO_CHECK", "False").lower() == "true"
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolo11n-cls.pt")
 YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.70"))
 
-app = FastAPI(title="Secured Dynamic local OCR Server", version="2.3.2")
+app = FastAPI(title="Secured Dynamic local OCR Server", version="2.3.3")
 
 # CORS Configuration
 origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
@@ -222,14 +222,6 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
 
     mime = resolve_mime(req)
     
-    category_label_map = {
-        "khmer_id": "a small rectangular plastic identity card, national ID card, badge, or driver's license",
-        "passport": "a passport page with booklet borders, photo, and MRZ machine-readable lines at the bottom",
-        "cv": "a full-page resume, curriculum vitae, CV, or professional work history document with text sections",
-        "certificate": "a certificate of achievement, academic diploma, award, or official credential document with decorative borders",
-        "invoice": "a financial invoice, billing receipt, purchase invoice, or utility bill with tables and columns",
-    }
-
     # ──────────────────────────────────────────────
     # 1. Text-Based Zero-Shot Classifier (DOCX / PDF)
     # ──────────────────────────────────────────────
@@ -240,22 +232,32 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
         extracted_text = extract_pdf_text(req.file)
 
     if extracted_text and text_pipeline is not None:
+        # For text classification, keep candidates clean and simple (e.g. CV vs Invoice)
+        text_labels = {
+            "khmer_id": "Cambodian National ID Card",
+            "passport": "International Passport",
+            "cv": "Curriculum Vitae Resume CV",
+            "certificate": "Academic Certificate Diploma",
+            "invoice": "Financial Invoice Bill Receipt",
+        }
         try:
-            candidate_labels = list(category_label_map.values()) + ["random unrelated text or literature page"]
+            candidate_labels = list(text_labels.values()) + ["random unrelated literature page"]
             results = text_pipeline(extracted_text[:1200], candidate_labels=candidate_labels)
             
             top1_label = results["labels"][0]
             top1_conf = results["scores"][0]
 
             top1_category = "unknown"
-            for cat, label in category_label_map.items():
+            for cat, label in text_labels.items():
                 if label == top1_label:
                     top1_category = cat
                     break
 
             print(f"🔍 [Local Text Classifier] Winner: '{top1_category}' ({top1_conf:.2%})")
 
-            conf_threshold = max(0.35, LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD)
+            # PDF/DOCX layouts are highly structured, but raw text classifiers can have lower zero-shot bounds.
+            # We enforce a relaxed 25% minimum threshold for zero-shot text matching.
+            conf_threshold = 0.25
 
             if top1_category == "unknown" or top1_conf < conf_threshold:
                 raise HTTPException(
@@ -280,6 +282,14 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
     # 2. Vision-Based Zero-Shot Classifier (Images & PDF fallback)
     # ──────────────────────────────────────────────
     if vision_pipeline is not None:
+        # Highly descriptive visual prompts for CLIP Vision Zero-Shot
+        vision_labels = {
+            "khmer_id": "a small rectangular plastic identity card, national ID card, badge, or driver's license",
+            "passport": "a passport page with booklet borders, photo, and MRZ machine-readable lines at the bottom",
+            "cv": "a full-page resume, curriculum vitae, CV, or professional work history document with text sections",
+            "certificate": "a certificate of achievement, academic diploma, award, or official credential document with decorative borders",
+            "invoice": "a financial invoice, billing receipt, purchase invoice, or utility bill with tables and columns",
+        }
         try:
             from PIL import Image
             file_bytes = base64.b64decode(req.file)
@@ -294,21 +304,22 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
             else:
                 img = Image.open(io.BytesIO(file_bytes))
 
-            candidate_labels = list(category_label_map.values()) + ["a random photo, landscape, or non-document object"]
+            candidate_labels = list(vision_labels.values()) + ["a random photo, landscape, or non-document object"]
             results = vision_pipeline(img, candidate_labels=candidate_labels)
 
             top1_label = results[0]["label"]
             top1_conf = results[0]["score"]
 
             top1_category = "unknown"
-            for cat, label in category_label_map.items():
+            for cat, label in vision_labels.items():
                 if label == top1_label:
                     top1_category = cat
                     break
 
             print(f"🔍 [Local Vision Classifier] Winner: '{top1_category}' ({top1_conf:.2%})")
 
-            conf_threshold = max(0.35, LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD)
+            # Check threshold (Safe 30% for multi-class visual zero-shot CLIP classification)
+            conf_threshold = 0.30
 
             if top1_category == "unknown" or top1_conf < conf_threshold:
                 raise HTTPException(
