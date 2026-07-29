@@ -223,11 +223,11 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
     mime = resolve_mime(req)
     
     category_label_map = {
-        "khmer_id": "a national ID card, identity card, or driver's license",
-        "passport": "a passport page or passport biodata page",
-        "cv": "a resume, curriculum vitae, CV, or employment history document",
-        "certificate": "a certificate, diploma, award, credentials, or document of achievement",
-        "invoice": "an invoice, bill, receipt, purchase order, or transaction statement",
+        "khmer_id": "a small rectangular plastic identity card, national ID card, badge, or driver's license",
+        "passport": "a passport page with booklet borders, photo, and MRZ machine-readable lines at the bottom",
+        "cv": "a full-page resume, curriculum vitae, CV, or professional work history document with text sections",
+        "certificate": "a certificate of achievement, academic diploma, award, or official credential document with decorative borders",
+        "invoice": "a financial invoice, billing receipt, purchase invoice, or utility bill with tables and columns",
     }
 
     # ──────────────────────────────────────────────
