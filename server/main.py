@@ -42,14 +42,14 @@ MAX_FILE_SIZE_MB = float(os.getenv("MAX_FILE_SIZE_MB", "15"))
 ENABLE_LOCAL_CLASSIFIER = os.getenv("ENABLE_LOCAL_CLASSIFIER", "False").lower() == "true"
 VISION_CLASSIFIER_MODEL = os.getenv("VISION_CLASSIFIER_MODEL", "openai/clip-vit-base-patch32").strip()
 TEXT_CLASSIFIER_MODEL = os.getenv("TEXT_CLASSIFIER_MODEL", "typeform/distilbert-base-uncased-mnli").strip()
-LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD = float(os.getenv("LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD", "0.60"))
+LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD = float(os.getenv("LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD", "0.35"))
 
 # Local YOLOv11 Verification Config
 ENABLE_YOLO_CHECK = os.getenv("ENABLE_YOLO_CHECK", "False").lower() == "true"
 YOLO_MODEL_PATH = os.getenv("YOLO_MODEL_PATH", "yolo11n-cls.pt")
 YOLO_CONFIDENCE_THRESHOLD = float(os.getenv("YOLO_CONFIDENCE_THRESHOLD", "0.70"))
 
-app = FastAPI(title="Secured Dynamic local OCR Server", version="2.3.0")
+app = FastAPI(title="Secured Dynamic local OCR Server", version="2.3.1")
 
 # CORS Configuration
 origins = [o.strip() for o in ALLOWED_ORIGINS.split(",") if o.strip()]
@@ -219,13 +219,13 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
 
     mime = resolve_mime(req)
     
-    # Text mapping descriptions to provide rich context to Zero-Shot pipelines
+    # Rich description prompts mapped to categories to guide Zero-Shot alignment
     category_label_map = {
-        "khmer_id": "national identity card",
-        "passport": "international passport document page",
-        "cv": "resume curriculum vitae CV document page",
-        "certificate": "academic certificate diploma award",
-        "invoice": "financial invoice receipt utility bill sales receipt",
+        "khmer_id": "a national ID card, identity card, or driver's license",
+        "passport": "a passport page or passport biodata page",
+        "cv": "a resume, curriculum vitae, CV, or employment history document",
+        "certificate": "a certificate, diploma, award, credentials, or document of achievement",
+        "invoice": "an invoice, bill, receipt, purchase order, or transaction statement",
     }
 
     # ──────────────────────────────────────────────
@@ -239,44 +239,36 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
 
     if extracted_text and text_pipeline is not None:
         try:
+            # We use multi-class ranking with clear descriptions + negative class
+            candidate_labels = list(category_label_map.values()) + ["random unrelated text or literature page"]
+            results = text_pipeline(extracted_text[:1200], candidate_labels=candidate_labels)
+            
+            top1_label = results["labels"][0]
+            top1_conf = results["scores"][0]
+
+            top1_category = "unknown"
+            for cat, label in category_label_map.items():
+                if label == top1_label:
+                    top1_category = cat
+                    break
+
+            print(f"🔍 [Local Text Classifier] Winner: '{top1_category}' ({top1_conf:.2%})")
+
+            # Check threshold (Default is 35% for zero-shot text classification)
+            conf_threshold = max(0.35, LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD)
+
+            if top1_category == "unknown" or top1_conf < conf_threshold:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Local verification failed: Document content not recognized (Matched as '{top1_label}' with {top1_conf:.2%})"
+                )
+
             if expected_category:
-                # Target-specific Binary classification (e.g. Is it a CV or not a CV?)
-                # This prevents overlap classification confusion between multi-class features
                 expected = expected_category.lower()
-                target_label = category_label_map[expected]
-                negative_label = f"something completely different from a {target_label}"
-                candidate_labels = [target_label, negative_label]
-                
-                results = text_pipeline(extracted_text[:1200], candidate_labels=candidate_labels)
-                top1_label = results["labels"][0]
-                top1_conf = results["scores"][0]
-                
-                print(f"🔍 [Local Text Classifier Target Check] '{expected}' vs Negative check result: '{top1_label}' ({top1_conf:.2%})")
-                
-                if top1_label == negative_label or top1_conf < LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:
+                if top1_category != expected:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Local verification failed: Uploaded content not verified as {expected.upper()} (Confidence: {top1_conf:.2%})"
-                    )
-            else:
-                # Multi-class classification (for general auto-routing)
-                candidate_labels = list(category_label_map.values()) + ["random unrelated generic text"]
-                results = text_pipeline(extracted_text[:1200], candidate_labels=candidate_labels)
-                top1_label = results["labels"][0]
-                top1_conf = results["scores"][0]
-
-                top1_category = "unknown"
-                for cat, label in category_label_map.items():
-                    if label == top1_label:
-                        top1_category = cat
-                        break
-
-                print(f"🔍 [Local Text Classifier Auto-Route] Classified as '{top1_category}' ({top1_conf:.2%})")
-
-                if top1_category == "unknown" or top1_conf < LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Local verification failed: Document content not recognized (Classified as '{top1_label}' with {top1_conf:.2%})"
+                        detail=f"Local verification failed: Mismatched document type. Expected '{expected}', but detected '{top1_category}'"
                     )
             return
         except HTTPException:
@@ -302,45 +294,36 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
             else:
                 img = Image.open(io.BytesIO(file_bytes))
 
+            # Run multi-class image classification with rich prompts and generic negative class
+            candidate_labels = list(category_label_map.values()) + ["a random photo, landscape, or non-document object"]
+            results = vision_pipeline(img, candidate_labels=candidate_labels)
+
+            top1_label = results[0]["label"]
+            top1_conf = results[0]["score"]
+
+            top1_category = "unknown"
+            for cat, label in category_label_map.items():
+                if label == top1_label:
+                    top1_category = cat
+                    break
+
+            print(f"🔍 [Local Vision Classifier] Winner: '{top1_category}' ({top1_conf:.2%})")
+
+            # Check threshold (Default is 35% for CLIP zero-shot classification)
+            conf_threshold = max(0.35, LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD)
+
+            if top1_category == "unknown" or top1_conf < conf_threshold:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Local verification failed: Uploaded image is not recognized (Matched as '{top1_label}' with {top1_conf:.2%})"
+                )
+
             if expected_category:
-                # Target-specific Binary classification (e.g. Is it a Certificate or not?)
-                # Strips out features of other documents to focus purely on visual target verification
                 expected = expected_category.lower()
-                target_label = category_label_map[expected]
-                negative_label = f"something completely different from a {target_label}"
-                candidate_labels = [target_label, negative_label]
-                
-                results = vision_pipeline(img, candidate_labels=candidate_labels)
-                top1_label = results[0]["label"]
-                top1_conf = results[0]["score"]
-                
-                print(f"🔍 [Local Vision Classifier Target Check] '{expected}' vs Negative check result: '{top1_label}' ({top1_conf:.2%})")
-                
-                if top1_label == negative_label or top1_conf < LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:
+                if top1_category != expected:
                     raise HTTPException(
                         status_code=400,
-                        detail=f"Local verification failed: Uploaded image is not verified as {expected.upper()} (Confidence: {top1_conf:.2%})"
-                    )
-            else:
-                # Multi-class classification (for general auto-routing)
-                candidate_labels = list(category_label_map.values()) + ["a useless random object or photo"]
-                results = vision_pipeline(img, candidate_labels=candidate_labels)
-
-                top1_label = results[0]["label"]
-                top1_conf = results[0]["score"]
-
-                top1_category = "unknown"
-                for cat, label in category_label_map.items():
-                    if label == top1_label:
-                        top1_category = cat
-                        break
-
-                print(f"🔍 [Local Vision Classifier Auto-Route] Classified as '{top1_category}' ({top1_conf:.2%})")
-
-                if top1_category == "unknown" or top1_conf < LOCAL_CLASSIFIER_CONFIDENCE_THRESHOLD:
-                    raise HTTPException(
-                        status_code=400,
-                        detail=f"Local verification failed: Uploaded image is not a recognized document (Classified as '{top1_label}' with {top1_conf:.2%})"
+                        detail=f"Local verification failed: Mismatched document type. Expected '{expected}', but detected '{top1_category}'"
                     )
             return
         except HTTPException:
