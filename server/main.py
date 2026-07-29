@@ -10,6 +10,14 @@ Run:
     uvicorn main:app --host 0.0.0.0 --port 8080 --reload
 """
 
+# Monkey patch for transformers import compatibility issue in baidu/Unlimited-OCR with transformers v5+
+try:
+    import sys
+    import transformers.utils.import_utils
+    transformers.utils.import_utils.is_torch_fx_available = lambda: True
+except Exception:
+    pass
+
 import os
 from datetime import datetime
 import re
