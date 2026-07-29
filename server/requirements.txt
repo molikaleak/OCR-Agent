@@ -8,3 +8,5 @@ pillow
 transformers
 torch
 pymupdf
+easyocr
+paddleocr
