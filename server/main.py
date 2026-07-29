@@ -94,7 +94,9 @@ class TokenUsage(BaseModel):
 class OcrResponse(BaseModel):
     success: bool
     document_type: str
-    confidence: Optional[float] = None  # Returned for validation logging
+    confidence: Optional[float] = None          # Returned for validation logging
+    classifier_model: Optional[str] = None      # Model used for local check (YOLO/CLIP/DistilBERT)
+    ocr_model: Optional[str] = None             # Gemini model used for OCR
     data: Optional[dict] = None
     error: Optional[str] = None
     raw_output: Optional[str] = None
@@ -211,12 +213,12 @@ def extract_pdf_text(base64_data: str) -> str:
 # ──────────────────────────────────────────────
 # Local Dual-Engine Zero-Shot Classifier
 # ──────────────────────────────────────────────
-async def verify_document_local(req: OcrRequest, expected_category: Optional[str] = None) -> Optional[float]:
-    """Local Dual-Engine Zero-Shot Classifier (CLIP & DistilBERT) with YOLO fallback. Returns confidence score."""
+async def verify_document_local(req: OcrRequest, expected_category: Optional[str] = None) -> tuple[Optional[float], Optional[str]]:
+    """Local Dual-Engine Zero-Shot Classifier (CLIP & DistilBERT) with YOLO fallback. Returns (confidence, model_name)."""
     if not ENABLE_LOCAL_CLASSIFIER:
         if ENABLE_YOLO_CHECK:
             return await verify_document_yolo(req, expected_category)
-        return None
+        return None, None
 
     mime = resolve_mime(req)
     
@@ -268,7 +270,7 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
                         status_code=400,
                         detail=f"Local verification failed: Mismatched document type. Expected '{expected}', but detected '{top1_category}'"
                     )
-            return top1_conf
+            return top1_conf, TEXT_CLASSIFIER_MODEL
         except HTTPException:
             raise
         except Exception as e:
@@ -321,25 +323,25 @@ async def verify_document_local(req: OcrRequest, expected_category: Optional[str
                         status_code=400,
                         detail=f"Local verification failed: Mismatched document type. Expected '{expected}', but detected '{top1_category}'"
                     )
-            return top1_conf
+            return top1_conf, VISION_CLASSIFIER_MODEL
         except HTTPException:
             raise
         except Exception as e:
             print(f"⚠️ Vision zero-shot classifier error: {e}.")
-            return None
+            return None, None
 
 
 # ──────────────────────────────────────────────
 # YOLO Pre-Verification Logic (Saves Gemini Tokens)
 # ──────────────────────────────────────────────
-async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str] = None) -> Optional[float]:
-    """Verify document using local YOLO11 before triggering Gemini API calls. Returns confidence score."""
+async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str] = None) -> tuple[Optional[float], Optional[str]]:
+    """Verify document using local YOLO11 before triggering Gemini API calls. Returns (confidence, model_name)."""
     if not ENABLE_YOLO_CHECK or yolo_model is None:
-        return None
+        return None, None
 
     mime = resolve_mime(req)
     if mime == "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-        return None
+        return None, None
 
     try:
         from PIL import Image
@@ -359,7 +361,7 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
         results = yolo_model(img, verbose=False)
         probs = results[0].probs
         if probs is None:
-            return None
+            return None, None
 
         top1_idx = probs.top1
         top1_class = results[0].names[top1_idx].lower()
@@ -395,7 +397,7 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
                         status_code=400,
                         detail=f"YOLO verification failed: Mismatched document type. Expected '{expected}', but YOLO classified as '{top1_class}'"
                     )
-            return top1_conf
+            return top1_conf, YOLO_MODEL_PATH
 
         # Pre-trained/dummy ImageNet classification model (yolo11n-cls.pt) fallback
         else:
@@ -421,7 +423,7 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
                             status_code=400,
                             detail=f"YOLO verification failed: Mismatched document type. Expected '{expected}', but file '{req.fileName}' detected as '{mock_class}'"
                         )
-                return top1_conf
+                return top1_conf, YOLO_MODEL_PATH
 
             DOCUMENT_IMAGENET_CLASSES = [
                 "web site", "website", "envelope", "notebook", "binder", "packet", "carton", 
@@ -446,13 +448,13 @@ async def verify_document_yolo(req: OcrRequest, expected_category: Optional[str]
                 )
             
             print(f"🔍 [YOLO Dummy Verification] Document page validated under class '{top1_class}' ({top1_conf:.2%})")
-            return top1_conf
+            return top1_conf, YOLO_MODEL_PATH
 
     except HTTPException:
         raise
     except Exception as e:
         print(f"⚠️ YOLO pre-verification skipped due to error: {e}")
-        return None
+        return None, None
 
 
 # ──────────────────────────────────────────────
@@ -605,7 +607,7 @@ def create_dynamic_handler(profile: dict):
         verify_payload_size(req)
 
         # Pre-verify category locally before triggering Gemini OCR API
-        conf = await verify_document_local(req, expected_category=profile["category"])
+        conf, cls_model = await verify_document_local(req, expected_category=profile["category"])
 
         raw, usage = await execute_ocr_call(req, profile["system_instruction"], profile["prompt"])
         parsed = extract_json(raw)
@@ -616,6 +618,8 @@ def create_dynamic_handler(profile: dict):
                 success=False,
                 document_type=profile["category"],
                 confidence=conf,
+                classifier_model=cls_model,
+                ocr_model=GEMINI_MODEL,
                 error="parse_failed",
                 raw_output=raw,
                 usage=usage_info
@@ -636,6 +640,8 @@ def create_dynamic_handler(profile: dict):
             success=True,
             document_type=profile["category"],
             confidence=conf,
+            classifier_model=cls_model,
+            ocr_model=GEMINI_MODEL,
             data=parsed,
             usage=usage_info
         )
@@ -674,7 +680,7 @@ async def auto_router(req: OcrRequest):
         return await handler_func(req)
 
     # Otherwise run general pre-verification (detects useless documents)
-    conf = await verify_document_local(req)
+    conf, cls_model = await verify_document_local(req)
 
     # Classify dynamically using the compiled classifier prompt
     classify_sys, classify_prompt = get_classifier_prompt()
@@ -707,10 +713,12 @@ async def auto_router(req: OcrRequest):
                 estimated_cost_usd=round(cost, 6)
             )
         response.confidence = conf
+        response.classifier_model = cls_model
+        response.ocr_model = GEMINI_MODEL
         return response
 
     usage_info = make_usage_info(classify_usage)
-    return OcrResponse(success=False, document_type="unknown", confidence=conf, error=f"Unknown category: {detected}", raw_output=raw, usage=usage_info)
+    return OcrResponse(success=False, document_type="unknown", confidence=conf, classifier_model=cls_model, ocr_model=GEMINI_MODEL, error=f"Unknown category: {detected}", raw_output=raw, usage=usage_info)
 
 
 # ──────────────────────────────────────────────

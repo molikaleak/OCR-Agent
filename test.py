@@ -251,10 +251,14 @@ def log_cost_metrics(file_name: str, category: str, status_code: int, elapsed: f
     total_tokens = 0
     estimated_cost = 0.0
     confidence = None
+    classifier_model = None
+    ocr_model = None
     
     try:
         data = json.loads(res_text)
         confidence = data.get("confidence")
+        classifier_model = data.get("classifier_model")
+        ocr_model = data.get("ocr_model")
         usage = data.get("usage")
         if usage:
             prompt_tokens = usage.get("prompt_tokens", 0)
@@ -265,13 +269,16 @@ def log_cost_metrics(file_name: str, category: str, status_code: int, elapsed: f
         pass
         
     confidence_str = f"{confidence:.2%}" if confidence is not None else "N/A"
+    classifier_str = classifier_model if classifier_model else "N/A"
+    ocr_str = ocr_model if ocr_model else "N/A"
         
     try:
         with open(log_file, mode="a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             if not file_exists:
                 writer.writerow([
-                    "Timestamp", "File Name", "Category", "Status Code", "Confidence",
+                    "Timestamp", "File Name", "Category", "Status Code", 
+                    "Classifier Model", "Confidence", "OCR Model",
                     "Prompt Tokens", "Completion Tokens", "Total Tokens", 
                     "Estimated Cost (USD)", "Duration (Seconds)"
                 ])
@@ -280,7 +287,9 @@ def log_cost_metrics(file_name: str, category: str, status_code: int, elapsed: f
                 file_name,
                 category.upper(),
                 status_code,
+                classifier_str,
                 confidence_str,
+                ocr_str,
                 prompt_tokens,
                 completion_tokens,
                 total_tokens,
