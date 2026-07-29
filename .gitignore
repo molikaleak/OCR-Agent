@@ -9,6 +9,9 @@ data/
 *.pdf
 *.docx
 
+# Metrics & Cost Tracking Logs
+ocr_cost_tracker.csv
+
 # Python Caches & Compiled Bytecode
 **/__pycache__/
 *.pyc

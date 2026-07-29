@@ -30,6 +30,8 @@ import os
 import io
 import time
 import argparse
+import csv
+from datetime import datetime
 
 # Base URL for local FastAPI server
 LOCAL_BASE_URL = "http://localhost:8080"
@@ -236,6 +238,54 @@ def send_file(file_path: str, category: str = None, custom_url: str = None):
         print(json.dumps(parsed_json, indent=2, ensure_ascii=False))
     except ValueError:
         print(res_text)
+
+    log_cost_metrics(file_name, category, status_code, elapsed, res_text)
+
+
+def log_cost_metrics(file_name: str, category: str, status_code: int, elapsed: float, res_text: str):
+    log_file = os.path.join(os.path.dirname(__file__), "ocr_cost_tracker.csv")
+    file_exists = os.path.isfile(log_file)
+    
+    prompt_tokens = 0
+    completion_tokens = 0
+    total_tokens = 0
+    estimated_cost = 0.0
+    
+    try:
+        data = json.loads(res_text)
+        usage = data.get("usage")
+        if usage:
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            total_tokens = usage.get("total_tokens", 0)
+            estimated_cost = usage.get("estimated_cost_usd", 0.0)
+    except Exception:
+        pass
+        
+    try:
+        with open(log_file, mode="a", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            if not file_exists:
+                writer.writerow([
+                    "Timestamp", "File Name", "Category", "Status Code", 
+                    "Prompt Tokens", "Completion Tokens", "Total Tokens", 
+                    "Estimated Cost (USD)", "Duration (Seconds)"
+                ])
+            writer.writerow([
+                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                file_name,
+                category.upper(),
+                status_code,
+                prompt_tokens,
+                completion_tokens,
+                total_tokens,
+                f"${estimated_cost:.6f}",
+                f"{elapsed:.2f}"
+            ])
+        print(f"\n📊 Metrics recorded to log: [ocr_cost_tracker.csv](file:///Users/molika/Desktop/n8n%20ocr/ocr_cost_tracker.csv)")
+    except Exception as e:
+        print(f"⚠️ Warning: Failed to write to log file: {e}")
+
 
 
 def interactive_mode():
