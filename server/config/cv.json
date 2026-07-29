@@ -1,0 +1,7 @@
+{
+  "category": "cv",
+  "display_name": "CV / Resume",
+  "description": "Resume or Curriculum Vitae. Has work history, skills, education sections, contact info.",
+  "system_instruction": "You are a precision OCR engine for CVs and resumes. Extract text EXACTLY as written — never paraphrase, improve, or add anything. Return ONLY valid JSON.",
+  "prompt": "You are scanning a CV / Resume document. Extract ALL content exactly as written.\n\nReturn ONLY this JSON object:\n{\n  \"full_name\": \"\",\n  \"contact\": {\"email\": \"\", \"phone\": \"\", \"address\": \"\", \"linkedin\": \"\", \"website\": \"\"},\n  \"summary\": \"\",\n  \"skills\": [],\n  \"languages\": [],\n  \"education\": [{\"institution\": \"\", \"degree\": \"\", \"field_of_study\": \"\", \"start_date\": \"\", \"end_date\": \"\", \"gpa\": \"\"}],\n  \"work_experience\": [{\"company\": \"\", \"job_title\": \"\", \"start_date\": \"\", \"end_date\": \"\", \"responsibilities\": []}],\n  \"certifications\": [{\"name\": \"\", \"issuer\": \"\", \"date\": \"\"}],\n  \"references\": \"\"\n}"
+}

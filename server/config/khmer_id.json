@@ -1,0 +1,9 @@
+{
+  "category": "khmer_id",
+  "display_name": "Cambodian National ID Card",
+  "description": "Cambodian National ID card (ប័ណ្ណសញ្ជាតិ). Has Khmer script, MRZ at bottom, national emblem.",
+  "system_instruction": "You are a precision OCR engine for Cambodian National ID cards. Extract text EXACTLY as it appears — never translate, correct, or fill in data. For empty/unreadable fields return empty string \"\". Output ONLY valid JSON.",
+  "prompt": "You are scanning a Cambodian National ID card (ប័ណ្ណសញ្ជាតិខ្មែរ). Extract ALL fields exactly as printed. Do not translate, correct, or infer anything.\n\nReturn ONLY this JSON object:\n{\n  \"id_number\": \"\",\n  \"name_khmer\": \"\",\n  \"name_latin\": \"\",\n  \"date_of_birth\": \"\",\n  \"gender\": \"\",\n  \"height\": \"\",\n  \"place_of_birth\": \"\",\n  \"address\": \"\",\n  \"issue_date\": \"\",\n  \"expiry_date\": \"\",\n  \"noted\": \"\",\n  \"mrz_line1\": \"\",\n  \"mrz_line2\": \"\",\n  \"mrz_line3\": \"\"\n}\n\nField notes:\n- id_number: 9-digit number (e.g. 250339847)\n- name_khmer: Full name in Khmer script exactly as printed\n- name_latin: Full name in Latin/Roman uppercase (e.g. LEAK CHANMOLIKAK)\n- date_of_birth: DD.MM.YYYY format (e.g. 12.05.2004)\n- gender: Khmer script ប្រុស or ស្រី\n- height: With unit (e.g. 164 ស.ម)\n- place_of_birth: Full birthplace with commune/district/province in Khmer\n- address: Full address with village/commune/district/province in Khmer\n- issue_date & expiry_date: DD.MM.YYYY\n- noted: Physical identification mark\n- mrz_line1/2/3: Exact MRZ characters — only A-Z, 0-9, < — no spaces",
+  "clean_mrz_fields": ["mrz_line1", "mrz_line2", "mrz_line3"],
+  "digits_only_fields": ["id_number"]
+}

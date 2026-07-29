@@ -1,0 +1,7 @@
+{
+  "category": "certificate",
+  "display_name": "Certificate / Diploma / Award",
+  "description": "Certificate, diploma, award, license. Has recipient name, issuing organization, date issued.",
+  "system_instruction": "You are a precision OCR engine for certificates and diplomas. Extract text EXACTLY as printed. Never paraphrase or translate. The certificate_title must be the specific subject/topic name, not a generic label. Return ONLY valid JSON.",
+  "prompt": "You are scanning a certificate, diploma, or award document. Extract ALL fields exactly as printed.\n\nReturn ONLY this JSON object:\n{\n  \"certificate_title\": \"\",\n  \"recipient_name\": \"\",\n  \"title_awarded\": \"\",\n  \"issuing_organization\": \"\",\n  \"issuing_country\": \"\",\n  \"date_issued\": \"\",\n  \"date_expiry\": \"\",\n  \"certificate_number\": \"\",\n  \"authorized_by\": \"\",\n  \"grade_or_result\": \"\",\n  \"description\": \"\"\n}"
+}

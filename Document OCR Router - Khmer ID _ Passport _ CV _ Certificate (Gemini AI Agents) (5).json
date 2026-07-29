@@ -1,0 +1,624 @@
+{
+  "name": "Document OCR Router - Khmer ID / Passport / CV / Certificate / Invoice (Gemini AI Agents)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "document-ocr",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "1706f896-1dde-49f5-8e49-14814f2f8b02",
+      "name": "Webhook (Default)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-19440, 880],
+      "webhookId": "3ee98aa6-d864-4b0e-89ad-4674c3998f97"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "khmer-id",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a0000001-khmer-id-node-000000000001",
+      "name": "Webhook (Khmer ID Endpoint)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-19440, 680],
+      "webhookId": "webhook-khmer-id-endpoint"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "passport",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a0000002-passport-node-000000000002",
+      "name": "Webhook (Passport Endpoint)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-19440, 480],
+      "webhookId": "webhook-passport-endpoint"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "cv",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a0000003-cv-node-000000000003",
+      "name": "Webhook (CV Endpoint)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-19440, 1080],
+      "webhookId": "webhook-cv-endpoint"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "certificate",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a0000004-cert-node-000000000004",
+      "name": "Webhook (Certificate Endpoint)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-19440, 1280],
+      "webhookId": "webhook-certificate-endpoint"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "invoice",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a0000006-invoice-node-000000000006",
+      "name": "Webhook (Invoice Endpoint)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-19440, 1680],
+      "webhookId": "webhook-invoice-endpoint"
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "document-ocrv2",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a0000005-ocrv2-node-000000000005",
+      "name": "Webhook (Auto Router v2)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-19440, 1480],
+      "webhookId": "webhook-document-ocrv2-endpoint"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────────────────\n// Normalize Input with Category Fast Path Detection\n// ─────────────────────────────────────────────────────────────────────────────\nconst body = $json.body || $json;\nconst query = $json.query || {};\nconst base64 = body.file || body.data || body.base64;\nlet mimeType = (body.mimeType || body.mimetype || '').toLowerCase();\nconst fileName = body.fileName || body.filename || '';\n\n// 1. Check explicit category from payload body or URL query parameter\nlet explicitCategory = (body.category || body.doc_type || body.type || query.category || query.type || '').toLowerCase();\n\n// 2. If category is not in body/query, check Webhook node name for fast path\nif (!explicitCategory || explicitCategory === 'auto') {\n  const nodeName = $node.name || '';\n  if (nodeName.includes('Khmer ID')) explicitCategory = 'khmer_id';\n  else if (nodeName.includes('Passport')) explicitCategory = 'passport';\n  else if (nodeName.includes('CV')) explicitCategory = 'cv';\n  else if (nodeName.includes('Certificate')) explicitCategory = 'certificate';\n  else if (nodeName.includes('Invoice')) explicitCategory = 'invoice';\n  else explicitCategory = null;\n}\n\nif (!base64) {\n  throw new Error('Missing field: file. Send JSON with { file: <base64>, mimeType, fileName }');\n}\n\n// Auto-detect MIME from fileName if not provided\nif (!mimeType && fileName) {\n  const ext = fileName.split('.').pop().toLowerCase();\n  const MIME_MAP = {\n    jpg: 'image/jpeg', jpeg: 'image/jpeg',\n    png: 'image/png', webp: 'image/webp',\n    pdf: 'application/pdf',\n    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'\n  };\n  mimeType = MIME_MAP[ext] || 'application/octet-stream';\n}\n\nlet routeFormat;\nif (mimeType.startsWith('image/')) routeFormat = 'image';\nelse if (mimeType === 'application/pdf') routeFormat = 'pdf';\nelse if (mimeType.includes('wordprocessingml')) routeFormat = 'docx';\nelse throw new Error('Unsupported MIME type: ' + mimeType + '. Use image/*, application/pdf, or .docx');\n\nreturn [{ json: { routeFormat, base64, mimeType, fileName, explicitCategory: explicitCategory || null } }];"
+      },
+      "id": "b1531181-e953-4876-beab-b758e3c149cb",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-19216, 880]
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "base64",
+        "options": {
+          "fileName": "={{ $json.fileName || 'document' }}",
+          "mimeType": "={{ $json.mimeType }}"
+        }
+      },
+      "id": "c9fca590-cef7-4653-9430-220894f7fb7b",
+      "name": "Convert Base64 to Binary",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [-18992, 880]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $('Normalize Input').item.json.routeFormat }}", "rightValue": "docx", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $('Normalize Input').item.json.routeFormat }}", "rightValue": "image", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $('Normalize Input').item.json.routeFormat }}", "rightValue": "pdf", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "none" }
+      },
+      "id": "d2d9dae6-f431-4ab2-9b88-1854f8ff8a27",
+      "name": "Format Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-18768, 880]
+    },
+    {
+      "parameters": { "operation": "text", "options": {} },
+      "id": "159298f7-6b22-47d0-9a6c-b0be2080f7b1",
+      "name": "Extract DOCX Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [-18528, 688]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { format: 'docx', extractedText: ($json.text || $json.data || '').trim() }, binary: $input.item.binary }];"
+      },
+      "id": "02b893ce-be8b-4db7-aa17-d1bc6773c43d",
+      "name": "Prepare DOCX",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-18320, 688]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { format: 'image', extractedText: null }, binary: $input.first().binary }];"
+      },
+      "id": "66551d39-3787-43d4-90cf-ac700b4e5ed9",
+      "name": "Prepare Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-18528, 880]
+    },
+    {
+      "parameters": { "operation": "pdf", "options": {} },
+      "id": "1a8eb341-7b40-4bf3-a69f-84555f779995",
+      "name": "Extract PDF Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [-18528, 1088]
+    },
+    {
+      "parameters": {
+        "jsCode": "const extractedText = ($json.text || $json.data || '').trim();\nreturn [{ json: { format: 'pdf', extractedText }, binary: $input.first().binary }];"
+      },
+      "id": "2f20886f-6f64-4c87-9878-5bebe29b0887",
+      "name": "Prepare PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-18320, 1088]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check if category was provided explicitly in payload/webhook\nconst normalizeNode = $('Normalize Input').first();\nconst explicitCategory = normalizeNode ? normalizeNode.json.explicitCategory : null;\nconst validCategories = ['khmer_id', 'passport', 'cv', 'certificate', 'invoice'];\n\nconst item = $input.first();\n\nif (explicitCategory && validCategories.includes(explicitCategory)) {\n  return [{\n    json: {\n      format: item.json.format,\n      extractedText: item.json.extractedText || null,\n      category: explicitCategory,\n      confidence: 100,\n      bypassedClassifier: true\n    },\n    binary: item.binary\n  }];\n}\n\nreturn [{\n  json: {\n    format: item.json.format,\n    extractedText: item.json.extractedText || null,\n    category: null,\n    confidence: null,\n    bypassedClassifier: false\n  },\n  binary: item.binary\n}];"
+      },
+      "id": "b0000001-fastpath-check-000000000001",
+      "name": "Check Category Fast Path",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-18150, 880]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $json.bypassedClassifier }}", "rightValue": true, "operator": { "type": "boolean", "operation": "true" } }],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "b0000002-fastpath-switch-000000000002",
+      "name": "Has Explicit Category?",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-17950, 880]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Classify this document carefully. Look at ALL visible content — text, layout, logos, fields, and structure.\n\nReturn ONLY a JSON object with no extra text:\n{\"category\": \"khmer_id\", \"confidence\": 95}\n\nCategories:\n- khmer_id = Cambodian National ID card (ប័ណ្ណសញ្ជាតិ). Has Khmer script, MRZ at bottom, national emblem.\n- passport = Any passport booklet. Has MRZ (2 or 3 lines), passport photo, country code.\n- cv = Resume or Curriculum Vitae. Has work history, skills, education sections, contact info.\n- certificate = Certificate, diploma, award, license. Has recipient name, issuing organization, date issued.\n- invoice = Invoice, bill, receipt, statement of account.\n{{ $json.extractedText ? '\\n\\nExtracted document text for reference:\\n' + $json.extractedText.slice(0, 3000) : '' }}",
+        "options": {
+          "systemMessage": "You are a precise document type classifier. Analyze the document visually and by text content. Output ONLY valid JSON — no markdown, no explanation. Format: {\"category\": \"khmer_id|passport|cv|certificate|invoice\", \"confidence\": <number 0-100>}",
+          "passthroughBinaryImages": true,
+          "passthroughBinaryPdfs": true
+        }
+      },
+      "id": "882f0fb0-f7f5-4a6b-bc07-8d2ae28a1b25",
+      "name": "Classifier Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [-17750, 1000]
+    },
+    {
+      "parameters": {
+        "jsCode": "// ─────────────────────────────────────────────────────────────────────────────\n// Parse Classifier Result\n// ─────────────────────────────────────────────────────────────────────────────\nfunction tryGet(nodeName) {\n  try { return $(nodeName).first(); } catch (e) { return null; }\n}\n\nfunction extractJson(raw) {\n  if (!raw) return null;\n  let text = raw.trim().replace(/^```json\\s*/i, '').replace(/```$/g, '').trim();\n  try { return JSON.parse(text); } catch (e) {}\n  const match = text.match(/\\{[\\s\\S]*\\}/);\n  if (match) { try { return JSON.parse(match[0]); } catch (e) {} }\n  return null;\n}\n\nconst raw = $json.output || $json.text || '';\nconst parsed = extractJson(raw);\n\nconst validCategories = ['khmer_id', 'passport', 'cv', 'certificate', 'invoice'];\nconst category = (parsed && validCategories.includes(parsed.category)) ? parsed.category : 'unknown';\nconst confidence = (parsed && typeof parsed.confidence === 'number') ? parsed.confidence : 0;\n\nif (category === 'unknown') {\n  throw new Error('Classifier returned unknown category. Raw: ' + raw);\n}\n\nconst priorItem = tryGet('Prepare Image') || tryGet('Prepare PDF') || tryGet('Prepare DOCX');\n\nreturn [{\n  json: {\n    format: priorItem ? priorItem.json.format : 'unknown',\n    extractedText: priorItem ? (priorItem.json.extractedText || null) : null,\n    category,\n    confidence,\n    bypassedClassifier: false\n  },\n  binary: priorItem ? priorItem.binary : undefined\n}];"
+      },
+      "id": "bde0a3b2-75dc-42cf-a692-ac6795c78048",
+      "name": "Parse Classifier Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-17520, 1000]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $json.category }}", "rightValue": "khmer_id", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $json.category }}", "rightValue": "passport", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $json.category }}", "rightValue": "cv", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $json.category }}", "rightValue": "certificate", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $json.category }}", "rightValue": "invoice", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra" }
+      },
+      "id": "aa193ad9-47be-48b9-8bdb-e5ada3eeb475",
+      "name": "Category Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-17300, 864]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are scanning a Cambodian National ID card (ប័ណ្ណសញ្ជាតិខ្មែរ). Extract ALL fields exactly as printed. Do not translate, correct, or infer anything.\n\nReturn ONLY this JSON object — no markdown, no extra text:\n{\n  \"id_number\": \"\",\n  \"name_khmer\": \"\",\n  \"name_latin\": \"\",\n  \"date_of_birth\": \"\",\n  \"gender\": \"\",\n  \"height\": \"\",\n  \"place_of_birth\": \"\",\n  \"address\": \"\",\n  \"issue_date\": \"\",\n  \"expiry_date\": \"\",\n  \"noted\": \"\",\n  \"mrz_line1\": \"\",\n  \"mrz_line2\": \"\",\n  \"mrz_line3\": \"\"\n}\n\nField notes:\n- id_number: 9-digit number (e.g. 250339847)\n- name_khmer: Full name in Khmer script exactly as printed\n- name_latin: Full name in Latin/Roman uppercase (e.g. LEAK CHANMOLIKAK)\n- date_of_birth: DD.MM.YYYY format (e.g. 12.05.2004)\n- gender: Khmer script ប្រុស or ស្រី\n- height: With unit (e.g. 164 ស.ម)\n- place_of_birth: Full birthplace with commune/district/province in Khmer\n- address: Full address with village/commune/district/province in Khmer\n- issue_date & expiry_date: DD.MM.YYYY\n- noted: Physical identification mark\n- mrz_line1/2/3: Exact MRZ characters — only A-Z, 0-9, < — no spaces\n{{ $json.extractedText ? '\\nExtracted text:\\n' + $json.extractedText.slice(0, 2000) : '' }}",
+        "options": {
+          "systemMessage": "You are a precision OCR engine for Cambodian National ID cards. Extract text EXACTLY as it appears — never translate, correct, or fill in data. Output ONLY valid JSON.",
+          "passthroughBinaryImages": true,
+          "passthroughBinaryPdfs": true
+        }
+      },
+      "id": "f11919f6-85c4-4c0c-ad25-7cc52c14afdd",
+      "name": "Khmer ID Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [-17050, 560]
+    },
+    {
+      "parameters": {
+        "jsCode": "function extractJson(raw) {\n  if (!raw) return null;\n  let text = raw.trim().replace(/^```json\\s*/i, '').replace(/```$/g, '').trim();\n  try { return JSON.parse(text); } catch (e) {}\n  const match = text.match(/\\{[\\s\\S]*\\}/);\n  if (match) { try { return JSON.parse(match[0]); } catch (e) {} }\n  return null;\n}\n\nconst raw = $json.output || $json.text || '';\nconst parsed = extractJson(raw);\n\nif (!parsed) {\n  return [{ json: { success: false, document_type: 'khmer_id', error: 'parse_failed', raw_output: raw } }];\n}\n\nfor (const f of ['mrz_line1', 'mrz_line2', 'mrz_line3']) {\n  if (parsed[f]) parsed[f] = parsed[f].toUpperCase().replace(/[^A-Z0-9<]/g, '');\n}\n\nif (parsed.id_number) {\n  const digits = parsed.id_number.replace(/\\D/g, '');\n  if (digits.length === 9) parsed.id_number = digits;\n}\n\nreturn [{ json: { success: true, document_type: 'khmer_id', data: parsed } }];"
+      },
+      "id": "55e4ba94-5203-4b3c-a03f-28f2b9d85773",
+      "name": "Parse Khmer ID Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-16800, 560]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are scanning a passport. Extract ALL visible fields exactly as printed. Do not translate, correct, or infer.\n\nReturn ONLY this JSON object — no markdown, no extra text:\n{\n  \"passport_type\": \"\",\n  \"country_code\": \"\",\n  \"passport_number\": \"\",\n  \"surname\": \"\",\n  \"given_names\": \"\",\n  \"nationality\": \"\",\n  \"date_of_birth\": \"\",\n  \"gender\": \"\",\n  \"place_of_birth\": \"\",\n  \"date_of_issue\": \"\",\n  \"date_of_expiry\": \"\",\n  \"personal_number\": \"\",\n  \"mrz_line1\": \"\",\n  \"mrz_line2\": \"\"\n}\n\nField notes:\n- passport_type: P, PD, etc.\n- country_code: 3-letter ISO code (e.g. KHM)\n- mrz_line1 & mrz_line2: ONLY A-Z, 0-9, < characters — 44 chars each — no spaces\n- For empty/unreadable fields return \"\"\n{{ $json.extractedText ? '\\nExtracted text:\\n' + $json.extractedText.slice(0, 2000) : '' }}",
+        "options": {
+          "systemMessage": "You are a precision OCR engine for passports. Extract EXACTLY what is printed. Never translate, correct, or infer. Return ONLY valid JSON.",
+          "passthroughBinaryImages": true,
+          "passthroughBinaryPdfs": true
+        }
+      },
+      "id": "dc7b6cba-1965-46a3-9586-c596c2086a05",
+      "name": "Passport Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [-17050, 768]
+    },
+    {
+      "parameters": {
+        "jsCode": "function extractJson(raw) {\n  if (!raw) return null;\n  let text = raw.trim().replace(/^```json\\s*/i, '').replace(/```$/g, '').trim();\n  try { return JSON.parse(text); } catch (e) {}\n  const match = text.match(/\\{[\\s\\S]*\\}/);\n  if (match) { try { return JSON.parse(match[0]); } catch (e) {} }\n  return null;\n}\n\nconst raw = $json.output || $json.text || '';\nconst parsed = extractJson(raw);\n\nif (!parsed) {\n  return [{ json: { success: false, document_type: 'passport', error: 'parse_failed', raw_output: raw } }];\n}\n\nfor (const f of ['mrz_line1', 'mrz_line2']) {\n  if (parsed[f]) parsed[f] = parsed[f].toUpperCase().replace(/[^A-Z0-9<]/g, '');\n}\n\nreturn [{ json: { success: true, document_type: 'passport', data: parsed } }];"
+      },
+      "id": "a135817c-b06f-470f-997a-b974ca240eba",
+      "name": "Parse Passport Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-16800, 768]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are scanning a CV / Resume document. Extract ALL content exactly as written — do not rewrite, summarize, or improve.\n\nReturn ONLY this JSON object — no markdown, no extra text:\n{\n  \"full_name\": \"\",\n  \"contact\": {\n    \"email\": \"\",\n    \"phone\": \"\",\n    \"address\": \"\",\n    \"linkedin\": \"\",\n    \"website\": \"\"\n  },\n  \"summary\": \"\",\n  \"skills\": [],\n  \"languages\": [],\n  \"education\": [\n    { \"institution\": \"\", \"degree\": \"\", \"field_of_study\": \"\", \"start_date\": \"\", \"end_date\": \"\", \"gpa\": \"\" }\n  ],\n  \"work_experience\": [\n    { \"company\": \"\", \"job_title\": \"\", \"start_date\": \"\", \"end_date\": \"\", \"responsibilities\": [] }\n  ],\n  \"certifications\": [\n    { \"name\": \"\", \"issuer\": \"\", \"date\": \"\" }\n  ],\n  \"references\": \"\"\n}\n\nRules:\n- Extract ONLY what is physically on the document\n- Arrays must be empty [] if not present\n- Empty string \"\" for any absent field\n{{ $json.extractedText ? '\\nExtracted document text:\\n' + $json.extractedText.slice(0, 4000) : '' }}",
+        "options": {
+          "systemMessage": "You are a precision OCR engine for CVs and resumes. Extract text EXACTLY as written — never paraphrase, improve, or add anything. Return ONLY valid JSON.",
+          "passthroughBinaryImages": true,
+          "passthroughBinaryPdfs": true
+        }
+      },
+      "id": "924bb36f-7aa5-475c-bb19-69c70dc45c7e",
+      "name": "CV Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [-17050, 1008]
+    },
+    {
+      "parameters": {
+        "jsCode": "function extractJson(raw) {\n  if (!raw) return null;\n  let text = raw.trim().replace(/^```json\\s*/i, '').replace(/```$/g, '').trim();\n  try { return JSON.parse(text); } catch (e) {}\n  const match = text.match(/\\{[\\s\\S]*\\}/);\n  if (match) { try { return JSON.parse(match[0]); } catch (e) {} }\n  return null;\n}\n\nconst raw = $json.output || $json.text || '';\nconst parsed = extractJson(raw);\n\nif (!parsed) {\n  return [{ json: { success: false, document_type: 'cv', error: 'parse_failed', raw_output: raw } }];\n}\n\nreturn [{ json: { success: true, document_type: 'cv', data: parsed } }];"
+      },
+      "id": "3bec9e34-d6f2-4cf8-afa2-3eeeedfe07ff",
+      "name": "Parse CV Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-16800, 1008]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are scanning a certificate, diploma, or award document. Extract ALL fields exactly as printed — do not translate or paraphrase.\n\nReturn ONLY this JSON object — no markdown, no extra text:\n{\n  \"certificate_title\": \"\",\n  \"recipient_name\": \"\",\n  \"title_awarded\": \"\",\n  \"issuing_organization\": \"\",\n  \"issuing_country\": \"\",\n  \"date_issued\": \"\",\n  \"date_expiry\": \"\",\n  \"certificate_number\": \"\",\n  \"authorized_by\": \"\",\n  \"grade_or_result\": \"\",\n  \"description\": \"\"\n}\n\nField notes:\n- certificate_title: The specific, meaningful title (e.g. 'Python Data Science Toolbox', 'Bachelor of Computer Science') — NOT a generic label\n- recipient_name: Exact name as printed on the certificate\n- issuing_organization: Full official name of institution\n- For empty/absent fields return \"\"\n{{ $json.extractedText ? '\\nExtracted document text:\\n' + $json.extractedText.slice(0, 3000) : '' }}",
+        "options": {
+          "systemMessage": "You are a precision OCR engine for certificates and diplomas. Extract text EXACTLY as printed. Never paraphrase or translate. The certificate_title must be the specific subject/topic name, not a generic label. Return ONLY valid JSON.",
+          "passthroughBinaryImages": true,
+          "passthroughBinaryPdfs": true
+        }
+      },
+      "id": "5f2a2434-88cd-44c3-a6ed-850585633108",
+      "name": "Certificate Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [-17050, 1232]
+    },
+    {
+      "parameters": {
+        "jsCode": "function extractJson(raw) {\n  if (!raw) return null;\n  let text = raw.trim().replace(/^```json\\s*/i, '').replace(/```$/g, '').trim();\n  try { return JSON.parse(text); } catch (e) {}\n  const match = text.match(/\\{[\\s\\S]*\\}/);\n  if (match) { try { return JSON.parse(match[0]); } catch (e) {} }\n  return null;\n}\n\nconst raw = $json.output || $json.text || '';\nconst parsed = extractJson(raw);\n\nif (!parsed) {\n  return [{ json: { success: false, document_type: 'certificate', error: 'parse_failed', raw_output: raw } }];\n}\n\nreturn [{ json: { success: true, document_type: 'certificate', data: parsed } }];"
+      },
+      "id": "bb0f942a-e195-43f6-8c69-d64387aeca81",
+      "name": "Parse Certificate Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-16800, 1232]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are scanning an invoice or billing document. Extract ALL fields exactly as printed — do not translate, calculate, or infer anything.\n\nReturn ONLY this JSON object — no markdown, no extra text:\n{\n  \"invoice_number\": \"\",\n  \"invoice_date\": \"\",\n  \"due_date\": \"\",\n  \"vendor\": {\n    \"name\": \"\",\n    \"address\": \"\",\n    \"phone\": \"\",\n    \"email\": \"\",\n    \"vat_number\": \"\"\n  },\n  \"customer\": {\n    \"name\": \"\",\n    \"address\": \"\",\n    \"phone\": \"\",\n    \"email\": \"\"\n  },\n  \"items\": [\n    { \"description\": \"\", \"quantity\": null, \"unit_price\": null, \"amount\": null }\n  ],\n  \"subtotal\": null,\n  \"tax_amount\": null,\n  \"discount_amount\": null,\n  \"total_amount\": null,\n  \"currency\": \"\",\n  \"payment_terms\": \"\",\n  \"bank_details\": {\n    \"bank_name\": \"\",\n    \"account_number\": \"\",\n    \"swift_code\": \"\"\n  }\n}\n\nRules:\n- Extract ONLY what is physically on the document\n- Numerical amounts should be numbers or floats, not strings (e.g. 150.00, not \"$150.00\")\n- Return \"\" or null for empty/absent fields\n{{ $json.extractedText ? '\\nExtracted document text:\\n' + $json.extractedText.slice(0, 3000) : '' }}",
+        "options": {
+          "systemMessage": "You are a precision OCR engine for invoices. Extract text EXACTLY as printed. Return ONLY valid JSON.",
+          "passthroughBinaryImages": true,
+          "passthroughBinaryPdfs": true
+        }
+      },
+      "id": "a0000007-invoice-agent-00000007",
+      "name": "Invoice Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [-17050, 1440]
+    },
+    {
+      "parameters": {
+        "jsCode": "function extractJson(raw) {\n  if (!raw) return null;\n  let text = raw.trim().replace(/^```json\\s*/i, '').replace(/```$/g, '').trim();\n  try { return JSON.parse(text); } catch (e) {}\n  const match = text.match(/\\{[\\s\\S]*\\}/);\n  if (match) { try { return JSON.parse(match[0]); } catch (e) {} }\n  return null;\n}\n\nconst raw = $json.output || $json.text || '';\nconst parsed = extractJson(raw);\n\nif (!parsed) {\n  return [{ json: { success: false, document_type: 'invoice', error: 'parse_failed', raw_output: raw } }];\n}\n\nreturn [{ json: { success: true, document_type: 'invoice', data: parsed } }];"
+      },
+      "id": "a0000008-parse-invoice-00000008",
+      "name": "Parse Invoice Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-16800, 1440]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "a6bff0dd-96e6-45a1-9937-fd1ebf16809f",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-16550, 880]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.0-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [-17200, 1640],
+      "id": "be83e91b-d896-4436-b65e-fd42a1fadadd",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "LdavlibBlWfsmCg4",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.0-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [-17900, 1200],
+      "id": "13f3fd22-5246-44a7-848e-a1c0a79c0419",
+      "name": "Google Gemini Chat Model1",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "LdavlibBlWfsmCg4",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook (Default)": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Webhook (Khmer ID Endpoint)": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Webhook (Passport Endpoint)": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Webhook (CV Endpoint)": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Webhook (Certificate Endpoint)": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Webhook (Invoice Endpoint)": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Webhook (Auto Router v2)": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Normalize Input": {
+      "main": [[{ "node": "Convert Base64 to Binary", "type": "main", "index": 0 }]]
+    },
+    "Convert Base64 to Binary": {
+      "main": [[{ "node": "Format Router", "type": "main", "index": 0 }]]
+    },
+    "Format Router": {
+      "main": [
+        [{ "node": "Extract DOCX Text", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Image", "type": "main", "index": 0 }],
+        [{ "node": "Extract PDF Text", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract DOCX Text": {
+      "main": [[{ "node": "Prepare DOCX", "type": "main", "index": 0 }]]
+    },
+    "Prepare DOCX": {
+      "main": [[{ "node": "Check Category Fast Path", "type": "main", "index": 0 }]]
+    },
+    "Prepare Image": {
+      "main": [[{ "node": "Check Category Fast Path", "type": "main", "index": 0 }]]
+    },
+    "Extract PDF Text": {
+      "main": [[{ "node": "Prepare PDF", "type": "main", "index": 0 }]]
+    },
+    "Prepare PDF": {
+      "main": [[{ "node": "Check Category Fast Path", "type": "main", "index": 0 }]]
+    },
+    "Check Category Fast Path": {
+      "main": [[{ "node": "Has Explicit Category?", "type": "main", "index": 0 }]]
+    },
+    "Has Explicit Category?": {
+      "main": [
+        [{ "node": "Category Router", "type": "main", "index": 0 }],
+        [{ "node": "Classifier Agent", "type": "main", "index": 0 }]
+      ]
+    },
+    "Classifier Agent": {
+      "main": [[{ "node": "Parse Classifier Result", "type": "main", "index": 0 }]]
+    },
+    "Parse Classifier Result": {
+      "main": [[{ "node": "Category Router", "type": "main", "index": 0 }]]
+    },
+    "Category Router": {
+      "main": [
+        [{ "node": "Khmer ID Agent", "type": "main", "index": 0 }],
+        [{ "node": "Passport Agent", "type": "main", "index": 0 }],
+        [{ "node": "CV Agent", "type": "main", "index": 0 }],
+        [{ "node": "Certificate Agent", "type": "main", "index": 0 }],
+        [{ "node": "Invoice Agent", "type": "main", "index": 0 }]
+      ]
+    },
+    "Khmer ID Agent": {
+      "main": [[{ "node": "Parse Khmer ID Result", "type": "main", "index": 0 }]]
+    },
+    "Passport Agent": {
+      "main": [[{ "node": "Parse Passport Result", "type": "main", "index": 0 }]]
+    },
+    "CV Agent": {
+      "main": [[{ "node": "Parse CV Result", "type": "main", "index": 0 }]]
+    },
+    "Certificate Agent": {
+      "main": [[{ "node": "Parse Certificate Result", "type": "main", "index": 0 }]]
+    },
+    "Invoice Agent": {
+      "main": [[{ "node": "Parse Invoice Result", "type": "main", "index": 0 }]]
+    },
+    "Parse Khmer ID Result": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Parse Passport Result": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Parse CV Result": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Parse Certificate Result": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Parse Invoice Result": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [[
+        { "node": "Khmer ID Agent", "type": "ai_languageModel", "index": 0 },
+        { "node": "Passport Agent", "type": "ai_languageModel", "index": 0 },
+        { "node": "CV Agent", "type": "ai_languageModel", "index": 0 },
+        { "node": "Certificate Agent", "type": "ai_languageModel", "index": 0 },
+        { "node": "Invoice Agent", "type": "ai_languageModel", "index": 0 }
+      ]]
+    },
+    "Google Gemini Chat Model1": {
+      "ai_languageModel": [[
+        { "node": "Classifier Agent", "type": "ai_languageModel", "index": 0 }
+      ]]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": false
+  },
+  "versionId": "476b813d-2bae-476c-8190-f4f25621841f",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "b52f60c3462a9aa792fbac5167604c1d4dfb1bf3d2ebff68ae55739c6b6a3a0d"
+  },
+  "nodeGroups": [],
+  "id": "VzHhUkzk2sBQbF6D",
+  "tags": []
+}

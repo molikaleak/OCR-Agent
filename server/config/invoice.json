@@ -1,0 +1,7 @@
+{
+  "category": "invoice",
+  "display_name": "Invoice / Bill / Receipt",
+  "description": "Invoice, bill, receipt, statement of account.",
+  "system_instruction": "You are a precision OCR engine for invoices and billing documents. Extract text and line items EXACTLY as printed. Return ONLY valid JSON.",
+  "prompt": "You are scanning an invoice or billing document. Extract ALL fields exactly as printed — do not translate, calculate, or infer anything.\n\nReturn ONLY this JSON object:\n{\n  \"invoice_number\": \"\",\n  \"invoice_date\": \"\",\n  \"due_date\": \"\",\n  \"vendor\": {\n    \"name\": \"\",\n    \"address\": \"\",\n    \"phone\": \"\",\n    \"email\": \"\",\n    \"vat_number\": \"\"\n  },\n  \"customer\": {\n    \"name\": \"\",\n    \"address\": \"\",\n    \"phone\": \"\",\n    \"email\": \"\"\n  },\n  \"items\": [\n    { \"description\": \"\", \"quantity\": null, \"unit_price\": null, \"amount\": null }\n  ],\n  \"subtotal\": null,\n  \"tax_amount\": null,\n  \"discount_amount\": null,\n  \"total_amount\": null,\n  \"currency\": \"\",\n  \"payment_terms\": \"\",\n  \"bank_details\": {\n    \"bank_name\": \"\",\n    \"account_number\": \"\",\n    \"swift_code\": \"\"\n  }\n}\n\nRules:\n- Extract ONLY what is physically on the document\n- Numerical amounts should be numbers or floats, not strings (e.g. 150.00, not \"$150.00\")\n- Return \"\" or null for empty/absent fields"
+}

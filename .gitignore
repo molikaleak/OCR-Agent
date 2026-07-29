@@ -1,0 +1,28 @@
+# Local Environment Secrets
+server/.env
+
+# Data and Testing Files
+data/
+*.png
+*.jpg
+*.jpeg
+*.pdf
+*.docx
+
+# Python Caches & Compiled Bytecode
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# PyTorch & YOLO Weights / Runs
+*.pt
+runs/
+
+# Logs & Diagnostics
+*.log
+.gemini/
+
+# macOS System Files
+.DS_Store
+Thumbs.db

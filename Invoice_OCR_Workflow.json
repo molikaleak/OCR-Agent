@@ -1,0 +1,228 @@
+{
+  "name": "Invoice OCR - Standalone Workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "invoice",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-invoice",
+      "name": "Webhook (Invoice)",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [-19440, 880],
+      "webhookId": "webhook-invoice-standalone"
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $json.body || $json;\nconst base64 = body.file || body.data || body.base64;\nlet mimeType = (body.mimeType || body.mimetype || '').toLowerCase();\nconst fileName = body.fileName || body.filename || '';\n\nif (!base64) {\n  throw new Error('Missing field: file. Send JSON with { file: <base64>, mimeType, fileName }');\n}\n\nif (!mimeType && fileName) {\n  const ext = fileName.split('.').pop().toLowerCase();\n  const MIME_MAP = {\n    jpg: 'image/jpeg', jpeg: 'image/jpeg',\n    png: 'image/png', webp: 'image/webp',\n    pdf: 'application/pdf',\n    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'\n  };\n  mimeType = MIME_MAP[ext] || 'application/octet-stream';\n}\n\nlet routeFormat;\nif (mimeType.startsWith('image/')) routeFormat = 'image';\nelse if (mimeType === 'application/pdf') routeFormat = 'pdf';\nelse if (mimeType.includes('wordprocessingml')) routeFormat = 'docx';\nelse throw new Error('Unsupported MIME type: ' + mimeType);\n\nreturn [{ json: { routeFormat, base64, mimeType, fileName } }];"
+      },
+      "id": "normalize-invoice",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-19216, 880]
+    },
+    {
+      "parameters": {
+        "operation": "toBinary",
+        "sourceProperty": "base64",
+        "options": {
+          "fileName": "={{ $json.fileName || 'document' }}",
+          "mimeType": "={{ $json.mimeType }}"
+        }
+      },
+      "id": "convert-invoice",
+      "name": "Convert Base64 to Binary",
+      "type": "n8n-nodes-base.convertToFile",
+      "typeVersion": 1.1,
+      "position": [-18992, 880]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $('Normalize Input').item.json.routeFormat }}", "rightValue": "docx", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $('Normalize Input').item.json.routeFormat }}", "rightValue": "image", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 1 },
+                "conditions": [{ "leftValue": "={{ $('Normalize Input').item.json.routeFormat }}", "rightValue": "pdf", "operator": { "type": "string", "operation": "equals" } }],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "none" }
+      },
+      "id": "router-invoice",
+      "name": "Format Router",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [-18768, 880]
+    },
+    {
+      "parameters": { "operation": "text", "options": {} },
+      "id": "docx-extract-invoice",
+      "name": "Extract DOCX Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [-18528, 688]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { format: 'docx', extractedText: ($json.text || $json.data || '').trim() }, binary: $input.item.binary }];"
+      },
+      "id": "docx-prep-invoice",
+      "name": "Prepare DOCX",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-18320, 688]
+    },
+    {
+      "parameters": {
+        "jsCode": "return [{ json: { format: 'image', extractedText: null }, binary: $input.first().binary }];"
+      },
+      "id": "img-prep-invoice",
+      "name": "Prepare Image",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-18528, 880]
+    },
+    {
+      "parameters": { "operation": "pdf", "options": {} },
+      "id": "pdf-extract-invoice",
+      "name": "Extract PDF Text",
+      "type": "n8n-nodes-base.extractFromFile",
+      "typeVersion": 1,
+      "position": [-18528, 1088]
+    },
+    {
+      "parameters": {
+        "jsCode": "const extractedText = ($json.text || $json.data || '').trim();\nreturn [{ json: { format: 'pdf', extractedText }, binary: $input.first().binary }];"
+      },
+      "id": "pdf-prep-invoice",
+      "name": "Prepare PDF",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 1,
+      "position": [-18320, 1088]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are scanning an invoice or billing document. Extract ALL fields exactly as printed — do not translate, calculate, or infer anything.\n\nReturn ONLY this JSON object — no markdown, no extra text:\n{\n  \"invoice_number\": \"\",\n  \"invoice_date\": \"\",\n  \"due_date\": \"\",\n  \"vendor\": {\n    \"name\": \"\",\n    \"address\": \"\",\n    \"phone\": \"\",\n    \"email\": \"\",\n    \"vat_number\": \"\"\n  },\n  \"customer\": {\n    \"name\": \"\",\n    \"address\": \"\",\n    \"phone\": \"\",\n    \"email\": \"\"\n  },\n  \"items\": [\n    { \"description\": \"\", \"quantity\": null, \"unit_price\": null, \"amount\": null }\n  ],\n  \"subtotal\": null,\n  \"tax_amount\": null,\n  \"discount_amount\": null,\n  \"total_amount\": null,\n  \"currency\": \"\",\n  \"payment_terms\": \"\",\n  \"bank_details\": {\n    \"bank_name\": \"\",\n    \"account_number\": \"\",\n    \"swift_code\": \"\"\n  }\n}\n\nRules:\n- Extract ONLY what is physically on the document\n- Numerical amounts should be numbers or floats, not strings (e.g. 150.00, not \"$150.00\")\n- Return \"\" or null for empty/absent fields\n{{ $json.extractedText ? '\\nExtracted document text:\\n' + $json.extractedText.slice(0, 3000) : '' }}",
+        "options": {
+          "systemMessage": "You are a precision OCR engine for invoices. Extract text EXACTLY as printed. Return ONLY valid JSON.",
+          "passthroughBinaryImages": true,
+          "passthroughBinaryPdfs": true
+        }
+      },
+      "id": "agent-invoice",
+      "name": "Invoice Agent",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2,
+      "position": [-18000, 880]
+    },
+    {
+      "parameters": {
+        "jsCode": "function extractJson(raw) {\n  if (!raw) return null;\n  let text = raw.trim().replace(/^```json\\s*/i, '').replace(/```$/g, '').trim();\n  try { return JSON.parse(text); } catch (e) {}\n  const match = text.match(/\\{[\\s\\S]*\\}/);\n  if (match) { try { return JSON.parse(match[0]); } catch (e) {} }\n  return null;\n}\n\nconst raw = $json.output || $json.text || '';\nconst parsed = extractJson(raw);\n\nif (!parsed) {\n  return [{ json: { success: false, document_type: 'invoice', error: 'parse_failed', raw_output: raw } }];\n}\n\nreturn [{ json: { success: true, document_type: 'invoice', data: parsed } }];"
+      },
+      "id": "parse-invoice",
+      "name": "Parse Invoice Result",
+      "type": "n8n-regex-base.code",
+      "typeVersion": 1,
+      "position": [-17750, 880]
+    },
+    {
+      "parameters": {
+        "respondWith": "firstIncomingItem",
+        "options": {}
+      },
+      "id": "respond-invoice",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [-17500, 880]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.0-flash",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1.1,
+      "position": [-18000, 1080],
+      "id": "model-invoice",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "LdavlibBlWfsmCg4",
+          "name": "Google Gemini(PaLM) Api account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook (Invoice)": {
+      "main": [[{ "node": "Normalize Input", "type": "main", "index": 0 }]]
+    },
+    "Normalize Input": {
+      "main": [[{ "node": "Convert Base64 to Binary", "type": "main", "index": 0 }]]
+    },
+    "Convert Base64 to Binary": {
+      "main": [[{ "node": "Format Router", "type": "main", "index": 0 }]]
+    },
+    "Format Router": {
+      "main": [
+        [{ "node": "Extract DOCX Text", "type": "main", "index": 0 }],
+        [{ "node": "Prepare Image", "type": "main", "index": 0 }],
+        [{ "node": "Extract PDF Text", "type": "main", "index": 0 }]
+      ]
+    },
+    "Extract DOCX Text": {
+      "main": [[{ "node": "Prepare DOCX", "type": "main", "index": 0 }]]
+    },
+    "Prepare DOCX": {
+      "main": [[{ "node": "Invoice Agent", "type": "main", "index": 0 }]]
+    },
+    "Prepare Image": {
+      "main": [[{ "node": "Invoice Agent", "type": "main", "index": 0 }]]
+    },
+    "Extract PDF Text": {
+      "main": [[{ "node": "Prepare PDF", "type": "main", "index": 0 }]]
+    },
+    "Prepare PDF": {
+      "main": [[{ "node": "Invoice Agent", "type": "main", "index": 0 }]]
+    },
+    "Invoice Agent": {
+      "main": [[{ "node": "Parse Invoice Result", "type": "main", "index": 0 }]]
+    },
+    "Parse Invoice Result": {
+      "main": [[{ "node": "Respond to Webhook", "type": "main", "index": 0 }]]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [[
+        { "node": "Invoice Agent", "type": "ai_languageModel", "index": 0 }
+      ]]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1"
+  }
+}
