@@ -59,6 +59,27 @@ def run_tests():
     print(f"🚀 Starting Batch Test Runner - Found {len(files)} files")
     print("=" * 60)
 
+    import urllib.request
+    import time
+    
+    print("⏳ Waiting for FastAPI server to become healthy (downloading model weights)...")
+    start_time = time.time()
+    server_ready = False
+    while time.time() - start_time < 1800:  # 30 minutes timeout
+        try:
+            with urllib.request.urlopen("http://localhost:8080/health", timeout=2) as response:
+                if response.status == 200:
+                    server_ready = True
+                    break
+        except Exception:
+            pass
+        time.sleep(5)
+        
+    if not server_ready:
+        print("❌ Timeout: FastAPI server did not become ready.")
+        sys.exit(1)
+    print("✅ Server is ready! Starting tests...")
+
     python_bin = "/Library/Frameworks/Python.framework/Versions/3.13/bin/python3"
     
     success_count = 0

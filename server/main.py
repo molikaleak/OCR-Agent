@@ -195,14 +195,35 @@ def get_unlimited_ocr_model():
     if unlimited_model is None:
         try:
             import torch
-            from transformers import AutoModel, AutoTokenizer
+            from transformers import AutoModel, AutoTokenizer, AutoConfig
             print("📥 Loading Local Unlimited-OCR model (3B MoE)...")
             model_name = 'baidu/Unlimited-OCR'
+            
+            # Load and patch config to handle any missing attributes dynamically
+            config = AutoConfig.from_pretrained(model_name, trust_remote_code=True)
+            
+            def custom_getattr(self, name):
+                # Provide safe defaults for critical params, return None for others
+                defaults = {
+                    'pad_token_id': 0,
+                    'attention_dropout': 0.0,
+                    'hidden_dropout': 0.0,
+                    'drop_path_rate': 0.0,
+                    'attention_bias': False,
+                    'classifier_dropout': 0.0,
+                    'bos_token_id': 1,
+                    'eos_token_id': 2,
+                }
+                return defaults.get(name, None)
+                
+            config.__class__.__getattr__ = custom_getattr
+                
             unlimited_tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
             device_map = "auto"
             torch_dtype = torch.float16 if torch.backends.mps.is_available() else torch.float32
             unlimited_model = AutoModel.from_pretrained(
                 model_name,
+                config=config,
                 trust_remote_code=True,
                 use_safetensors=True,
                 torch_dtype=torch_dtype,
@@ -936,6 +957,19 @@ async def auto_router(req: OcrRequest):
 # ──────────────────────────────────────────────
 @app.on_event("startup")
 async def startup_banner():
+    # Pre-load the selected OCR engine to prevent client request timeouts during lazy-loading
+    print(f"⏳ Pre-loading OCR engine: {OCR_ENGINE.upper()}...")
+    try:
+        if OCR_ENGINE == "easyocr":
+            get_easyocr_reader()
+        elif OCR_ENGINE == "paddleocr":
+            get_paddleocr_reader()
+        elif OCR_ENGINE == "unlimited-ocr":
+            get_unlimited_ocr_model()
+        print(f"✅ OCR engine {OCR_ENGINE.upper()} pre-loaded successfully!")
+    except Exception as startup_err:
+        print(f"❌ Warning: Failed to pre-load OCR engine {OCR_ENGINE.upper()}: {startup_err}")
+
     print("\n" + "=" * 60)
     print("🚀 Local FastAPI OCR Server — Config-Driven Engine")
     print("=" * 60)
